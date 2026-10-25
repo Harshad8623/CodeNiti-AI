@@ -223,3 +223,49 @@ def login(username, password, remember_me):
     assert res['status'] == 'FUNCTIONALITY_RISK_DETECTED'
     assert 'signature' in res['structural_warning'].lower()
 
+
+def test_analyze_universal_javascript():
+    from services.ast_analyzer import analyze_universal
+    js_code = """
+// Production web service
+const apiKey = "live_secret_token_12345678";
+
+function handleLogin(req, res) {
+    const userInput = req.body.id;
+    eval(userInput);
+    try {
+        db.query("SELECT * FROM accounts WHERE id = " + userInput);
+    } catch (e) {}
+}
+"""
+    res = analyze_universal(js_code, 'javascript')
+    assert res['loc'] > 0
+    assert res['cyclomatic_complexity'] >= 2
+    rule_ids = [f['rule_id'] for f in res['findings']]
+    assert 'SEC_DANGEROUS_EVAL' in rule_ids
+    assert 'SEC_SQL_INJECTION' in rule_ids
+    assert 'SEC_HARDCODED_SECRET' in rule_ids
+    assert 'SEC_EMPTY_CATCH' in rule_ids
+
+
+def test_verify_repair_javascript_flow(monkeypatch):
+    import asyncio
+    import services.gemini as gemini_mod
+
+    vulnerable_js = """
+function processData(userId) {
+    eval(userId);
+    return true;
+}
+"""
+    clean_js = "```javascript\nfunction processData(userId) {\n    const safeId = String(userId).trim();\n    return safeId.length > 0;\n}\n```"
+    mock_gemini = AsyncMock(return_value=clean_js)
+    monkeypatch.setattr(gemini_mod, 'call_gemini', mock_gemini)
+
+    res = asyncio.run(execute_repair_verification(vulnerable_js, language='javascript'))
+    assert res['status'] == 'STATIC_CHECKS_PASSED'
+    assert res['resolved_count'] >= 1
+    assert res['remaining_count'] == 0
+    assert '```javascript' in res['report_markdown']
+
+

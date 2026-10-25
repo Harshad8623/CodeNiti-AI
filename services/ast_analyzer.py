@@ -1,5 +1,6 @@
 """Deterministic Python AST Analysis: Complexity metrics and security/code smell detection."""
 import ast
+import re
 from typing import Any
 
 class ASTAnalysisResult:
@@ -226,6 +227,143 @@ def analyze_ast(source_code: str) -> dict[str, Any]:
         'class_count': class_count,
         'defined_functions': defined_functions,
         'function_signatures': function_signatures,
+        'defined_classes': defined_classes,
+        'findings': findings
+    }
+
+
+def analyze_universal(source_code: str, language: str = 'javascript') -> dict[str, Any]:
+    """Deterministic static analysis for multi-language source code (JS, TS, Java, C/C++, Go, etc.)."""
+    lines = source_code.splitlines()
+    clean_lines = []
+    in_block_comment = False
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith('/*'):
+            in_block_comment = True
+        if in_block_comment:
+            if '*/' in stripped:
+                in_block_comment = False
+            continue
+        if stripped.startswith(('//', '#', '--', ';')):
+            continue
+        clean_lines.append(stripped)
+
+    loc = len(clean_lines)
+
+    branch_regex = re.compile(
+        r'\b(if|else\s+if|elif|for|foreach|while|case|catch|switch)\b|\?|&&|\|\||\band\b|\bor\b'
+    )
+    complexity = 1
+    for cl in clean_lines:
+        complexity += len(branch_regex.findall(cl))
+
+    defined_functions = []
+    defined_classes = []
+
+    func_pattern = re.compile(
+        r'(?:function\s+([a-zA-Z0-9_$]+)|(?:const|let|var)\s+([a-zA-Z0-9_$]+)\s*=\s*(?:async\s*)?(?:\([^)]*\)|[a-zA-Z0-9_$]+)\s*=>|def\s+([a-zA-Z0-9_]+)|func\s+(?:\([^)]+\)\s+)?([a-zA-Z0-9_]+)|fn\s+([a-zA-Z0-9_]+)|(?:public|private|protected|static|\s)+\s+[a-zA-Z0-9_<>[\]]+\s+([a-zA-Z0-9_$]+)\s*\()'
+    )
+    class_pattern = re.compile(r'\b(?:class|struct|interface|enum)\s+([a-zA-Z0-9_$]+)\b')
+
+    for line in clean_lines:
+        fm = func_pattern.search(line)
+        if fm:
+            name = next((g for g in fm.groups() if g), None)
+            if name and name not in ('if', 'for', 'while', 'switch', 'catch'):
+                defined_functions.append(name)
+        cm = class_pattern.search(line)
+        if cm:
+            defined_classes.append(cm.group(1))
+
+    findings = []
+    sensitive_var_names = {'password', 'secret', 'api_key', 'token', 'private_key', 'passwd', 'auth_token'}
+
+    for idx, raw_line in enumerate(lines, start=1):
+        line = raw_line.strip()
+        if line.startswith(('//', '#', '/*', '*')):
+            continue
+
+        # Dangerous eval / dynamic execution
+        if re.search(r'\b(?:eval|exec)\s*\(', line):
+            findings.append({
+                'rule_id': 'SEC_DANGEROUS_EVAL',
+                'severity': 'HIGH',
+                'line': idx,
+                'message': f"Dynamic code evaluation in {language.capitalize()}. Potential arbitrary code execution vector.",
+                'tool': 'universal-ast'
+            })
+
+        # SQL Injection via string interpolation / concatenation
+        if re.search(r'\b(?:execute|query|raw|prepare)\s*\(\s*(?:`[^`]*\$\{|"[^"]*"\s*\+|[a-zA-Z0-9_]+\s*\+\s*["\'])', line, re.IGNORECASE):
+            findings.append({
+                'rule_id': 'SEC_SQL_INJECTION',
+                'severity': 'HIGH',
+                'line': idx,
+                'message': "SQL query assembled via dynamic string concatenation/template literals. Use parameterized queries.",
+                'tool': 'universal-ast'
+            })
+
+        # Command Injection
+        if re.search(r'\b(?:exec|execSync|spawn|spawnSync|system|popen|Runtime\.getRuntime\(\)\.exec)\s*\(', line):
+            findings.append({
+                'rule_id': 'SEC_CMD_INJECTION',
+                'severity': 'HIGH',
+                'line': idx,
+                'message': f"OS command execution in {language.capitalize()}. Ensure arguments are passed as an array without shell expansion.",
+                'tool': 'universal-ast'
+            })
+
+        # Hardcoded Credentials / Secrets
+        if any(s in line.lower() for s in sensitive_var_names):
+            if re.search(r'["\'][a-zA-Z0-9_\-]{8,}["\']', line):
+                findings.append({
+                    'rule_id': 'SEC_HARDCODED_SECRET',
+                    'severity': 'HIGH',
+                    'line': idx,
+                    'message': f"Potential hardcoded credential or secret in variable. Store in environment variables.",
+                    'tool': 'universal-ast'
+                })
+        elif re.search(r'AKIA[0-9A-Z]{16}|BEGIN (?:RSA )?PRIVATE KEY', line):
+            findings.append({
+                'rule_id': 'SEC_HARDCODED_SECRET',
+                'severity': 'HIGH',
+                'line': idx,
+                'message': "Hardcoded cryptographic key or AWS credential pattern detected.",
+                'tool': 'universal-ast'
+            })
+
+        # Empty / Bare Catch blocks
+        if re.search(r'catch\s*(?:\([^)]*\))?\s*\{\s*\}', line):
+            findings.append({
+                'rule_id': 'SEC_EMPTY_CATCH',
+                'severity': 'MEDIUM',
+                'line': idx,
+                'message': "Empty catch block detected. Swallowing exceptions obscures critical runtime failures.",
+                'tool': 'universal-ast'
+            })
+
+        # Weak Cryptographic Hashing (MD5)
+        if re.search(r'\b(?:createHash\s*\(\s*["\']md5["\']|getInstance\s*\(\s*["\']MD5["\']|MD5_Init)\b', line, re.IGNORECASE):
+            findings.append({
+                'rule_id': 'SEC_WEAK_HASH',
+                'severity': 'MEDIUM',
+                'line': idx,
+                'message': "Weak MD5 hashing algorithm detected. Use SHA-256 or secure hashing algorithms.",
+                'tool': 'universal-ast'
+            })
+
+    return {
+        'valid_syntax': True,
+        'syntax_error': None,
+        'loc': loc,
+        'cyclomatic_complexity': max(1, complexity),
+        'function_count': len(defined_functions),
+        'class_count': len(defined_classes),
+        'defined_functions': defined_functions,
+        'function_signatures': {f: [] for f in defined_functions},
         'defined_classes': defined_classes,
         'findings': findings
     }

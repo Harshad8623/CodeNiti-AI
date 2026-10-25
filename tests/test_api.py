@@ -239,4 +239,25 @@ def test_audit_project_zip_valid_and_security(signed_in):
     assert r_saved.status_code == 200
     assert r_saved.json()['saved'] is True
 
+    # 6. Mixed multi-language zip with neglected non-code files (images, markdown, docs, configs)
+    buf_mixed = io.BytesIO()
+    with zipfile.ZipFile(buf_mixed, 'w') as z:
+        z.writestr('app.py', 'def home():\n    return "Welcome"\n')
+        z.writestr('server.js', 'const express = require("express");\napp.get("/", (req, res) => res.send("OK"));\n')
+        z.writestr('README.md', '# My Project\nDocumentation content.')
+        z.writestr('logo.png', b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR')
+        z.writestr('proposal.docx', b'PK\x03\x04dummyworddoc')
+        z.writestr('settings.json', '{"port": 8080}')
+    buf_mixed.seek(0)
+
+    r_mixed = client.post('/api/audit-project', files={'file': ('full-project.zip', buf_mixed.getvalue(), 'application/zip')})
+    assert r_mixed.status_code == 200
+    res_text = r_mixed.json()['result']
+    assert '`app.py`' in res_text
+    assert '`server.js`' in res_text
+    assert 'JavaScript' in res_text
+    assert 'Python' in res_text
+    assert 'Neglected Non-Code Files' in res_text
+
+
 

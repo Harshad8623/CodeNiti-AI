@@ -39,13 +39,19 @@ def scan_bandit_raw(code: str) -> tuple[list[dict[str, Any]], bool]:
         except Exception:
             return [], False
 
-def audit_code(code: str) -> dict[str, Any]:
-    """Execute both AST and Bandit analyzers deterministically on the code."""
-    ast_res = analyze_ast(code)
-    bandit_findings, bandit_available = scan_bandit_raw(code)
+def audit_code(code: str, language: str = 'python') -> dict[str, Any]:
+    """Execute language-appropriate static analyzer deterministically."""
+    from services.ast_analyzer import analyze_ast, analyze_universal
+    lang = (language or 'python').lower()
+    if lang in ('python', 'py'):
+        ast_res = analyze_ast(code)
+        bandit_findings, bandit_available = scan_bandit_raw(code)
+    else:
+        ast_res = analyze_universal(code, lang)
+        bandit_findings, bandit_available = [], True
     
     all_findings = list(ast_res.get('findings', [])) + bandit_findings
-    if not bandit_available:
+    if lang in ('python', 'py') and not bandit_available:
         all_findings.append({
             'rule_id': 'SCANNER_NOTICE_BANDIT_OFFLINE',
             'name': 'Scanner Notice',
@@ -78,13 +84,13 @@ def audit_code(code: str) -> dict[str, Any]:
     }
 
 def extract_code_block(text: str) -> str:
-    """Extract code from ```python ... ``` fences or return stripped text."""
-    pattern = r'```(?:python)?\s*\n(.*?)\n```'
+    """Extract code from ```lang ... ``` fences or return stripped text."""
+    pattern = r'```(?:[a-zA-Z0-9_+#-]+)?\s*\n(.*?)\n```'
     match = re.search(pattern, text, re.DOTALL)
     if match:
         return match.group(1).strip()
     # If no fences, return text without outer fences
-    cleaned = re.sub(r'^```[a-z]*\n?', '', text.strip(), flags=re.MULTILINE)
+    cleaned = re.sub(r'^```[a-zA-Z0-9_+#-]*\n?', '', text.strip(), flags=re.MULTILINE)
     cleaned = re.sub(r'```$', '', cleaned.strip(), flags=re.MULTILINE)
     return cleaned.strip()
 
@@ -102,15 +108,15 @@ async def execute_repair_verification(code: str, language: str = 'python') -> di
     """Execute complete closed-loop audit, targeted AI repair, and independent re-scan verification."""
     from services.gemini import call_gemini
 
-    before_audit = audit_code(code)
+    before_audit = audit_code(code, language)
     
     if not before_audit['valid_syntax']:
         return {
             'status': 'SYNTAX_ERROR',
-            'summary': 'Code contains invalid Python syntax; cannot run AST repair verification.',
+            'summary': f"Code contains invalid {language.capitalize()} syntax; cannot run repair verification.",
             'before': before_audit,
             'after': None,
-            'report_markdown': f"## ⚠️ Syntax Error Detected\n\n```\n{before_audit['syntax_error']}\n```\nPlease correct basic Python syntax before running automated repair verification."
+            'report_markdown': f"## ⚠️ Syntax Error Detected\n\n```\n{before_audit['syntax_error']}\n```\nPlease correct basic syntax before running automated repair verification."
         }
         
     initial_findings = before_audit['findings']
@@ -118,17 +124,17 @@ async def execute_repair_verification(code: str, language: str = 'python') -> di
     if not initial_findings:
         return {
             'status': 'CLEAN',
-            'summary': 'Zero AST violations or Bandit security vulnerabilities detected.',
+            'summary': f"Zero violations or security vulnerabilities detected in {language.capitalize()}.",
             'before': before_audit,
             'after': before_audit,
             'report_markdown': (
-                "## ✅ Clean Code Verification\n\n"
+                f"## ✅ Clean {language.capitalize()} Code Verification\n\n"
                 "**Zero static issues or security vulnerabilities detected.**\n\n"
+                f"- **Language:** `{language.capitalize()}`\n"
                 f"- **Lines of Code (LOC):** {before_audit['metrics']['loc']}\n"
                 f"- **Cyclomatic Complexity:** {before_audit['metrics']['cyclomatic_complexity']}\n"
                 f"- **Functions / Classes:** {before_audit['metrics']['function_count']} / {before_audit['metrics']['class_count']}\n"
-                "- **Deterministic AST Scan:** Passed\n"
-                "- **Bandit Security Scanner:** Passed\n"
+                "- **Deterministic Static Scan:** Passed\n"
             )
         }
 
@@ -140,13 +146,13 @@ async def execute_repair_verification(code: str, language: str = 'python') -> di
 
     repair_prompt = {
         'code': code,
-        'language': 'python',
+        'language': language,
         'target_violations': findings_str,
         'repair_instruction': (
-            "Refactor this Python code to fix EVERY listed static analysis and security violation. "
+            f"Refactor this {language.capitalize()} code to fix EVERY listed static analysis and security violation. "
             "Maintain the original business logic, function names, and parameter signatures. "
-            "Never delete functions or replace bodies with empty 'pass'. "
-            "Output the full refactored Python code inside a ```python ``` code block, "
+            "Never delete functions or replace bodies with empty stubs. "
+            f"Output the full refactored {language.capitalize()} code inside a ```{language} ``` code block, "
             "followed by a concise bullet list of changes made."
         )
     }
@@ -159,10 +165,10 @@ async def execute_repair_verification(code: str, language: str = 'python') -> di
         repaired_code = code
 
     # Stage 3: Independent Re-scan of the repaired code!
-    after_audit = audit_code(repaired_code)
+    after_audit = audit_code(repaired_code, language)
 
-    # Optional 2nd self-healing pass if syntax error or critical issues remain
-    if not after_audit['valid_syntax']:
+    # Optional 2nd self-healing pass if syntax error or critical issues remain in Python
+    if not after_audit['valid_syntax'] and language.lower() in ('python', 'py'):
         try:
             followup_prompt = {
                 'code': repaired_code,
@@ -176,7 +182,7 @@ async def execute_repair_verification(code: str, language: str = 'python') -> di
             gemini_output2 = await call_gemini('optimize', followup_prompt)
             repaired_code2 = extract_code_block(gemini_output2)
             if repaired_code2:
-                after_audit2 = audit_code(repaired_code2)
+                after_audit2 = audit_code(repaired_code2, language)
                 if after_audit2['valid_syntax']:
                     repaired_code = repaired_code2
                     after_audit = after_audit2
@@ -270,8 +276,8 @@ async def execute_repair_verification(code: str, language: str = 'python') -> di
     if diff_text:
         report_lines.append(f"\n### 📝 Verified Code Diff\n```diff\n{diff_text}\n```")
 
-    report_lines.append(f"\n### 💻 Full Repaired Source Code\n```python\n{repaired_code}\n```")
-    report_lines.append("\n> [!IMPORTANT]\n> **Verification Scope:** Static compliance confirms that configured AST & Bandit rules passed on the re-scanned patch. Static verification does not prove functional or behavioral equivalence; execute automated unit tests to verify runtime behavior.")
+    report_lines.append(f"\n### 💻 Full Repaired Source Code\n```{language}\n{repaired_code}\n```")
+    report_lines.append(f"\n> [!IMPORTANT]\n> **Verification Scope:** Static compliance confirms that configured rules passed on the re-scanned {language.capitalize()} patch. Static verification does not prove functional or behavioral equivalence; execute automated unit tests to verify runtime behavior.")
 
     return {
         'status': status,
