@@ -80,6 +80,25 @@ def analyze_ast(source_code: str) -> dict[str, Any]:
                         'message': f"Use of '{node.func.id}()' allows arbitrary code execution. Avoid using dynamic code evaluation.",
                         'tool': 'ast'
                     })
+                elif node.func.id in ('system', 'popen'):
+                    findings.append({
+                        'rule_id': 'AST_OS_SYSTEM',
+                        'severity': 'HIGH',
+                        'line': node.lineno,
+                        'message': f"Use of 'os.{node.func.id}()' is vulnerable to shell command injection. Use subprocess with an explicit argument list and shell=False.",
+                        'tool': 'ast'
+                    })
+            elif isinstance(node.func, ast.Attribute):
+                if node.func.attr in ('run', 'Popen', 'call', 'check_output', 'check_call'):
+                    for kw in node.keywords:
+                        if kw.arg == 'shell' and isinstance(kw.value, ast.Constant) and kw.value.value is True:
+                            findings.append({
+                                'rule_id': 'AST_SUBPROCESS_SHELL_TRUE',
+                                'severity': 'HIGH',
+                                'line': node.lineno,
+                                'message': "Subprocess call with 'shell=True' detected. This is a critical command injection vector if untrusted input is passed.",
+                                'tool': 'ast'
+                            })
 
         # Check for bare except: (catches KeyboardInterrupt and hides critical bugs)
         elif isinstance(node, ast.ExceptHandler):
@@ -130,6 +149,9 @@ def analyze_ast(source_code: str) -> dict[str, Any]:
                                     'tool': 'ast'
                                 })
 
+    defined_functions = [n.name for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
+    defined_classes = [n.name for n in ast.walk(tree) if isinstance(n, ast.ClassDef)]
+
     return {
         'valid_syntax': True,
         'syntax_error': None,
@@ -137,5 +159,7 @@ def analyze_ast(source_code: str) -> dict[str, Any]:
         'cyclomatic_complexity': complexity,
         'function_count': function_count,
         'class_count': class_count,
+        'defined_functions': defined_functions,
+        'defined_classes': defined_classes,
         'findings': findings
     }

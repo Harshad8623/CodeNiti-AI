@@ -5,6 +5,7 @@
   const $$ = selector => Array.from(document.querySelectorAll(selector));
   const TOOLS = {
     'verify-repair':['Verify & Auto-Repair','Detect AST & Bandit issues, synthesize targeted AI patch, and re-scan to prove resolution.','Verify & Repair Code','single'],
+    'audit-project':['Project Audit (ZIP)','Scan an entire Python project archive (.zip) for multi-file AST risks and Bandit security issues.','Audit ZIP Project','zip'],
     optimize:['Optimise code','Identify improvements in performance, clarity and correctness.','Analyse code','single'],
     complexity:['Complexity analysis','Estimate Big-O behaviour and algorithmic trade-offs.','Analyse complexity','single'],
     debug:['Debug assistant','Identify possible root causes and propose regression tests.','Debug code','single'],
@@ -25,8 +26,9 @@
     compare:['def square(x):\n    return x * 2','def square(x):\n    return x * x'],
     beautify:'def greet(name:str)->str:\n  print("Hello",name)\n  return "hello " +name'
   };
-  let tool='verify-repair',user=null,mode='login',running=false,result='',toastHandle,drawerKind='history';
+  let tool='verify-repair',user=null,mode='login',running=false,result='',toastHandle,drawerKind='history',selectedZipFile=null;
   const code=$('#codeInput'),prompt=$('#promptInputText'),before=$('#beforeInput'),after=$('#afterInput');
+  const zipInput=$('#zipFileInput'),zipDropzone=$('#zipDropzone'),zipInfo=$('#zipFileInfo'),browseZipBtn=$('#browseZipBtn');
   const modifiedHeaders={'Content-Type':'application/json','X-Requested-With':'XMLHttpRequest'};
   function toast(message){const el=$('#toast');el.textContent=message;el.classList.add('visible');clearTimeout(toastHandle);toastHandle=setTimeout(()=>el.classList.remove('visible'),3700);}
   async function api(path,options={}){
@@ -40,12 +42,99 @@
   function updateCount(){const value=code.value;const lines=value.split('\n');$('#lineGutter').textContent=lines.map((_,i)=>i+1).join('\n');$('#editorCount').textContent=`${lines.length} ${lines.length===1?'line':'lines'} · ${value.length} characters`;}
   function setStatus(text,variant=''){$('#resultStatus').textContent=text;$('#resultStatus').className=`status-tag ${variant}`;}
   function clearResult(){result='';$('#resultMeta').textContent='Awaiting your first run';setStatus('READY');$('#copyBtn').disabled=true;$('#downloadBtn').disabled=true;$('#outputArea').replaceChildren();const empty=document.createElement('div');empty.className='empty-report';const icon=document.createElement('span');icon.className='empty-symbol';icon.textContent='⌁';const heading=document.createElement('h3');heading.textContent='A clearer view of your code.';const detail=document.createElement('p');detail.textContent='Select a tool, paste a snippet and run an analysis. Your report will appear here.';const keyboard=document.createElement('span');keyboard.className='keyboard-hint';keyboard.textContent='Ctrl / ⌘ + Enter to run';empty.append(icon,heading,detail,keyboard);$('#outputArea').append(empty);}
-  function setTool(next){if(!TOOLS[next])return;tool=next;const [title,detail,action,type]=TOOLS[next];$$('[data-tool]').forEach(b=>b.classList.toggle('active',b.dataset.tool===next));$('#toolHeading').textContent=title;$('#toolDescription').textContent=detail;$('#runLabel').textContent=action;$('#singleInput').classList.toggle('hidden',type!=='single');$('#promptInput').classList.toggle('hidden',type!=='prompt');$('#compareInput').classList.toggle('hidden',type!=='compare');const pythonOnly=['security','beautify'].includes(tool);$('#language').disabled=pythonOnly;if(pythonOnly)$('#language').value='python';const extension={python:'py',javascript:'js',typescript:'ts',java:'java',cpp:'cpp',c:'c',csharp:'cs',go:'go',rust:'rs',sql:'sql',html:'html',css:'css'}[$('#language').value]||'txt';$('#fileLabel').textContent=type==='prompt'?'request.md':`snippet.${extension}`;clearResult();$('#sidebar').classList.remove('open');}
-  function loadSample(){const sample=EXAMPLES[tool];if(Array.isArray(sample)){before.value=sample[0];after.value=sample[1];}else if(TOOLS[tool][3]==='prompt'){prompt.value=sample;}else{code.value=sample;}updateCount();toast('Example loaded. Ready to run.');}
+  function setTool(next){if(!TOOLS[next])return;tool=next;const [title,detail,action,type]=TOOLS[next];$$('[data-tool]').forEach(b=>b.classList.toggle('active',b.dataset.tool===next));$('#toolHeading').textContent=title;$('#toolDescription').textContent=detail;$('#runLabel').textContent=action;$('#singleInput').classList.toggle('hidden',type!=='single');$('#promptInput').classList.toggle('hidden',type!=='prompt');$('#compareInput').classList.toggle('hidden',type!=='compare');$('#zipInput').classList.toggle('hidden',type!=='zip');const pythonOnly=['security','beautify','verify-repair','audit-project'].includes(tool);$('#language').disabled=pythonOnly;if(pythonOnly)$('#language').value='python';const extension={python:'py',javascript:'js',typescript:'ts',java:'java',cpp:'cpp',c:'c',csharp:'cs',go:'go',rust:'rs',sql:'sql',html:'html',css:'css'}[$('#language').value]||'txt';$('#fileLabel').textContent=type==='prompt'?'request.md':type==='zip'?(selectedZipFile?selectedZipFile.name:'project.zip'):`snippet.${extension}`;clearResult();$('#sidebar').classList.remove('open');}
+  function loadSample(){if(tool==='audit-project'){toast('Please choose a .zip file or drag & drop one into the upload zone.');return;}const sample=EXAMPLES[tool];if(Array.isArray(sample)){before.value=sample[0];after.value=sample[1];}else if(TOOLS[tool][3]==='prompt'){prompt.value=sample;}else{code.value=sample;}updateCount();toast('Example loaded. Ready to run.');}
   function payload(){const language=$('#language').value,save_history=$('#saveHistory').checked,type=TOOLS[tool][3];if(type==='prompt'){if(!prompt.value.trim())throw new Error('Describe your requested implementation.');return {prompt:prompt.value,language,save_history};}if(type==='compare'){if(!before.value.trim()||!after.value.trim())throw new Error('Enter both code versions.');return {code1:before.value,code2:after.value,language,save_history};}if(!code.value.trim())throw new Error('Paste source code or load an example.');return {code:code.value,language,save_history};}
   function inline(target,text){const rx=/(`[^`\n]+`|\*\*[^*\n]+\*\*)/g;let match,at=0;while((match=rx.exec(text))){if(match.index>at)target.append(document.createTextNode(text.slice(at,match.index)));const bold=match[0].startsWith('*');const element=document.createElement(bold?'strong':'code');element.textContent=match[0].slice(bold?2:1,bold?-2:-1);target.append(element);at=match.index+match[0].length;}if(at<text.length)target.append(document.createTextNode(text.slice(at)));}
-  function render(text){const root=$('#outputArea');root.replaceChildren();const report=document.createElement('div');report.className='report';const lines=text.replace(/\r\n/g,'\n').split('\n');let i=0;while(i<lines.length){let line=lines[i];if(!line.trim()){i++;continue;}if(line.trim().startsWith('```')){const parts=[];i++;while(i<lines.length&&!lines[i].trim().startsWith('```'))parts.push(lines[i++]);i++;const pre=document.createElement('pre'),c=document.createElement('code');c.textContent=parts.join('\n');pre.append(c);report.append(pre);continue;}const heading=line.match(/^(#{1,4})\s+(.+)$/);if(heading){const h=document.createElement(`h${Math.min(4,heading[1].length+1)}`);inline(h,heading[2]);report.append(h);i++;continue;}if(/^\s*([-*]|\d+\.)\s/.test(line)){const ordered=/^\s*\d+\./.test(line);const list=document.createElement(ordered?'ol':'ul');while(i<lines.length&&/^\s*([-*]|\d+\.)\s/.test(lines[i])){const li=document.createElement('li');inline(li,lines[i++].replace(/^\s*([-*]|\d+\.)\s*/,''));list.append(li);}report.append(list);continue;}const para=document.createElement('p');const paragraph=[];while(i<lines.length&&lines[i].trim()&&!/^\s*(#{1,4}\s|[-*]\s|\d+\.\s|```)/.test(lines[i]))paragraph.push(lines[i++]);if(!paragraph.length){paragraph.push(line);i++;}inline(para,paragraph.join(' '));report.append(para);}root.append(report);root.scrollTop=0;}
-  async function run(){if(running)return;if(!user){openAuth('login');return;}let data;try{data=payload();}catch(e){toast(e.message);return;}running=true;$('#runBtn').disabled=true;setStatus('RUNNING','working');$('#outputArea').replaceChildren();const loading=document.createElement('div');loading.className='loading-box';const spinner=document.createElement('div');spinner.className='spinner';loading.append(spinner,document.createTextNode('Analysing your input…'));$('#outputArea').append(loading);try{const output=await post(`/api/${tool}`,data);result=output.result;render(result);setStatus(output.cached?'CACHED':'COMPLETE','success');$('#resultMeta').textContent=`${output.engine.toUpperCase()} · ${output.duration_ms} ms${output.saved?' · Saved':''}`;$('#copyBtn').disabled=false;$('#downloadBtn').disabled=false;if(output.disclaimer)toast(output.disclaimer);refreshMetrics(false);}catch(e){setStatus('ERROR','error');$('#outputArea').replaceChildren();const box=document.createElement('div');box.className='error-box';box.textContent=e.message;$('#outputArea').append(box);$('#resultMeta').textContent='Analysis not completed';if(e.status===401)openAuth('login');}finally{running=false;$('#runBtn').disabled=false;}}
+  function render(text){
+    const root=$('#outputArea');root.replaceChildren();const report=document.createElement('div');report.className='report';const lines=text.replace(/\r\n/g,'\n').split('\n');let i=0;
+    while(i<lines.length){
+      let line=lines[i];
+      if(!line.trim()){i++;continue;}
+      if(line.trim().startsWith('```')){
+        const parts=[];i++;while(i<lines.length&&!lines[i].trim().startsWith('```'))parts.push(lines[i++]);i++;
+        const pre=document.createElement('pre'),c=document.createElement('code');c.textContent=parts.join('\n');pre.append(c);report.append(pre);continue;
+      }
+      if(line.trim().startsWith('|')&&line.includes('|')){
+        const tblLines=[];
+        while(i<lines.length&&lines[i].trim().startsWith('|')&&lines[i].includes('|')){tblLines.push(lines[i].trim());i++;}
+        if(tblLines.length>=2){
+          const isSep=/^\|?(\s*:?-+:?\s*\|)+\s*:?-+:?\s*\|?$/.test(tblLines[1]);
+          const table=document.createElement('table');let start=0;
+          if(isSep){
+            const thead=document.createElement('thead'),tr=document.createElement('tr');
+            tblLines[0].replace(/^\||\|$/g,'').split('|').forEach(c=>{const th=document.createElement('th');inline(th,c.trim());tr.append(th);});
+            thead.append(tr);table.append(thead);start=2;
+          }
+          const tbody=document.createElement('tbody');
+          for(let r=start;r<tblLines.length;r++){
+            const tr=document.createElement('tr');
+            tblLines[r].replace(/^\||\|$/g,'').split('|').forEach(c=>{const td=document.createElement('td');inline(td,c.trim());tr.append(td);});
+            tbody.append(tr);
+          }
+          table.append(tbody);report.append(table);continue;
+        }
+      }
+      if(line.trim().startsWith('>')){
+        const qLines=[];while(i<lines.length&&lines[i].trim().startsWith('>')){qLines.push(lines[i].trim().replace(/^>\s?/,''));i++;}
+        const bq=document.createElement('blockquote'),qRaw=qLines.join('\n');
+        if(/\[!(CAUTION|WARNING)\]/i.test(qRaw))bq.className='callout-caution';
+        const cleanQ=qRaw.replace(/\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]/gi,'').trim();
+        const qp=document.createElement('p');inline(qp,cleanQ);bq.append(qp);report.append(bq);continue;
+      }
+      const heading=line.match(/^(#{1,4})\s+(.+)$/);
+      if(heading){const h=document.createElement(`h${Math.min(4,heading[1].length+1)}`);inline(h,heading[2]);report.append(h);i++;continue;}
+      if(/^\s*([-*]|\d+\.)\s/.test(line)){
+        const ordered=/^\s*\d+\./.test(line),list=document.createElement(ordered?'ol':'ul');
+        while(i<lines.length&&/^\s*([-*]|\d+\.)\s/.test(lines[i])){const li=document.createElement('li');inline(li,lines[i++].replace(/^\s*([-*]|\d+\.)\s*/,''));list.append(li);}
+        report.append(list);continue;
+      }
+      const para=document.createElement('p'),paragraph=[];
+      while(i<lines.length&&lines[i].trim()&&!/^\s*(#{1,4}\s|[-*]\s|\d+\.\s|```|\||>)/.test(lines[i]))paragraph.push(lines[i++]);
+      if(!paragraph.length){paragraph.push(line);i++;}inline(para,paragraph.join(' '));report.append(para);
+    }
+    root.append(report);root.scrollTop=0;
+  }
+  async function run(){
+    if(running)return;if(!user){openAuth('login');return;}
+    if(tool==='audit-project'){
+      if(!selectedZipFile){toast('Please choose a .zip file to audit.');return;}
+      running=true;$('#runBtn').disabled=true;setStatus('RUNNING','working');$('#outputArea').replaceChildren();
+      const loading=document.createElement('div');loading.className='loading-box';
+      const spinner=document.createElement('div');spinner.className='spinner';
+      loading.append(spinner,document.createTextNode('Inspecting and auditing project archive…'));$('#outputArea').append(loading);
+      try{
+        const formData=new FormData();formData.append('file',selectedZipFile);
+        const res=await fetch('/api/audit-project',{method:'POST',credentials:'same-origin',headers:{'X-Requested-With':'XMLHttpRequest'},body:formData});
+        const raw=await res.text();let data;
+        try{data=JSON.parse(raw);}catch{throw new Error('The server returned an unexpected response.');}
+        if(!res.ok){const msg=Array.isArray(data.detail)?data.detail.map(x=>x.msg).join(', '):data.detail;const err=new Error(msg||`Request failed (${res.status})`);err.status=res.status;throw err;}
+        result=data.result;render(result);setStatus('COMPLETE','success');
+        $('#resultMeta').textContent=`${data.engine.toUpperCase()} · ${data.duration_ms} ms`;
+        $('#copyBtn').disabled=false;$('#downloadBtn').disabled=false;if(data.disclaimer)toast(data.disclaimer);refreshMetrics(false);
+      }catch(e){
+        setStatus('ERROR','error');$('#outputArea').replaceChildren();
+        const box=document.createElement('div');box.className='error-box';box.textContent=e.message;
+        $('#outputArea').append(box);$('#resultMeta').textContent='Audit not completed';if(e.status===401)openAuth('login');
+      }finally{running=false;$('#runBtn').disabled=false;}
+      return;
+    }
+    let data;try{data=payload();}catch(e){toast(e.message);return;}
+    running=true;$('#runBtn').disabled=true;setStatus('RUNNING','working');$('#outputArea').replaceChildren();
+    const loading=document.createElement('div');loading.className='loading-box';
+    const spinner=document.createElement('div');spinner.className='spinner';
+    loading.append(spinner,document.createTextNode('Analysing your input…'));$('#outputArea').append(loading);
+    try{
+      const output=await post(`/api/${tool}`,data);result=output.result;render(result);
+      setStatus(output.cached?'CACHED':'COMPLETE','success');
+      $('#resultMeta').textContent=`${output.engine.toUpperCase()} · ${output.duration_ms} ms${output.saved?' · Saved':''}`;
+      $('#copyBtn').disabled=false;$('#downloadBtn').disabled=false;if(output.disclaimer)toast(output.disclaimer);refreshMetrics(false);
+    }catch(e){
+      setStatus('ERROR','error');$('#outputArea').replaceChildren();
+      const box=document.createElement('div');box.className='error-box';box.textContent=e.message;
+      $('#outputArea').append(box);$('#resultMeta').textContent='Analysis not completed';if(e.status===401)openAuth('login');
+    }finally{running=false;$('#runBtn').disabled=false;}
+  }
   async function refreshService(){try{const s=await api('/api/status');$('#engineStatus').textContent=s.ai_available?`Gemini · ${s.model}`:'Local tools ready';$('#apiState').textContent=s.ai_available?'AI engine configured':'AI key not configured';}catch{$('#engineStatus').textContent='Service unavailable';$('#apiState').textContent='Service unavailable';}}
   async function refreshMetrics(show=false){if(!user)return;try{const data=await api('/api/stats');$('#historyCount').textContent=data.saved_analyses;if(show){drawerKind='metrics';drawerTitle('Performance metrics');const root=$('#drawerContent');root.replaceChildren();const grid=document.createElement('div');grid.className='metric-grid';const items=[['Analyses completed',data.requests_total],['Cache hit rate',`${data.cache_hit_rate_percent}%`],['P95 latency',data.p95_latency_ms===null?'—':`${data.p95_latency_ms} ms`],['Saved reports',data.saved_analyses],['Avg. cold request',data.average_cold_ms===null?'—':`${data.average_cold_ms} ms`],['Avg. cached request',data.average_cached_ms===null?'—':`${data.average_cached_ms} ms`],['AI requests left (UTC)',data.ai_remaining_today],['Measured samples',data.sample_size]];for(const [name,value] of items){const box=document.createElement('div');box.className='metric';const number=document.createElement('strong');number.textContent=value;const label=document.createElement('span');label.textContent=name;box.append(number,label);grid.append(box);}root.append(grid);const note=document.createElement('p');note.className='drawer-paragraph';note.textContent='Metrics use up to the last 500 completed requests from your account. They contain timings and tool names, not your source code. Cached and cold averages can differ by task mix; this is an observational metric, not a controlled benchmark.';root.append(note);$('#clearHistoryBtn').classList.add('hidden');openDrawer();}}
     catch(e){if(show)toast(e.message);}}
@@ -72,5 +161,27 @@
   $('#historyBtn').addEventListener('click',showHistory);$('#insightsBtn').addEventListener('click',()=>refreshMetrics(true));$('#aboutBtn').addEventListener('click',showAbout);$('#footerAbout').addEventListener('click',showAbout);$('#accountBtn').addEventListener('click',()=>user?showAccount():openAuth('login'));
   $('#drawerClose').addEventListener('click',closeDrawer);$('#scrim').addEventListener('click',()=>{closeDrawer();$('#sidebar').classList.remove('open');});$('#menuBtn').addEventListener('click',()=>{closeDrawer();$('#sidebar').classList.toggle('open');});
   $('#clearHistoryBtn').addEventListener('click',async()=>{if(!confirm('Delete all saved analyses and their caches?'))return;try{await api('/api/history',{method:'DELETE'});showHistory();refreshMetrics(false);toast('History and cache cleared.');}catch(e){toast(e.message);}});
+  function handleZipSelection(f){
+    if(!f.name.toLowerCase().endsWith('.zip')){toast('Please choose a valid .zip file.');return;}
+    if(f.size>5*1024*1024){toast('Archive exceeds 5 MB upload limit.');return;}
+    selectedZipFile=f;
+    zipInfo.textContent=`Selected: ${f.name} (${(f.size/1024).toFixed(1)} KB)`;
+    zipInfo.classList.remove('hidden');
+    $('#fileLabel').textContent=f.name;
+    toast(`Archive "${f.name}" ready to audit.`);
+  }
+  if(browseZipBtn&&zipInput&&zipDropzone){
+    browseZipBtn.addEventListener('click',()=>zipInput.click());
+    zipDropzone.addEventListener('click',e=>{if(e.target!==browseZipBtn)zipInput.click();});
+    zipDropzone.addEventListener('dragover',e=>{e.preventDefault();zipDropzone.classList.add('dragover');});
+    ['dragleave','dragend'].forEach(ev=>zipDropzone.addEventListener(ev,()=>zipDropzone.classList.remove('dragover')));
+    zipDropzone.addEventListener('drop',e=>{
+      e.preventDefault();zipDropzone.classList.remove('dragover');
+      if(e.dataTransfer.files&&e.dataTransfer.files.length)handleZipSelection(e.dataTransfer.files[0]);
+    });
+    zipInput.addEventListener('change',()=>{
+      if(zipInput.files&&zipInput.files.length)handleZipSelection(zipInput.files[0]);
+    });
+  }
   setTool('verify-repair');updateCount();refreshService();hydrateAuth();
 })();

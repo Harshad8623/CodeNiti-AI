@@ -51,8 +51,15 @@ async def beautify(req:CodeRequest,user=Depends(current_user)):
 
 @router.post('/verify-repair',response_model=AnalysisResponse)
 async def verify_repair(req:CodeRequest,user=Depends(current_user)):
+    from database import take_ai_quota
     from services.audit_engine import execute_repair_verification
     import time
+
+    # Enforce daily AI quota limit on repair verification requests
+    allowed, _ = take_ai_quota(user['id'])
+    if not allowed:
+        raise HTTPException(status_code=429, detail='Daily AI request quota reached. Try again tomorrow (UTC).')
+
     started=time.perf_counter()
     try:
         report=await execute_repair_verification(req.code,req.language)
@@ -67,15 +74,17 @@ async def verify_repair(req:CodeRequest,user=Depends(current_user)):
             disclaimer='Targeted repair re-scanned and verified using Python AST and Bandit.'
         )
     except Exception as exc:
-        raise HTTPException(502,f"Verification repair pipeline error: {str(exc)}") from exc
+        raise HTTPException(502,"Automated repair verification failed. Please try again.") from exc
 
 @router.post('/audit-project',response_model=AnalysisResponse)
 async def audit_project_zip(file:UploadFile=File(...),user=Depends(current_user)):
+    import time
+    started=time.perf_counter()
     if not file.filename.lower().endswith('.zip'):
         raise HTTPException(422,'Upload a valid .zip archive containing Python source files.')
     contents=await file.read()
     if len(contents)>5*1024*1024:
-        raise HTTPException(413,'ZIP archive exceeds 5 MB limit.')
+        raise HTTPException(413,'ZIP archive exceeds 5 MB compressed upload limit.')
     
     import zipfile
     import io
@@ -87,16 +96,34 @@ async def audit_project_zip(file:UploadFile=File(...),user=Depends(current_user)
     file_rows=[]
     findings_details=[]
     
+    MAX_UNCOMPRESSED_TOTAL = 15 * 1024 * 1024  # 15 MB total expanded limit (Zip bomb defense)
+    MAX_UNCOMPRESSED_FILE = 1 * 1024 * 1024    # 1 MB per file limit
+    MAX_PY_FILES = 30
+    running_uncompressed_bytes = 0
+
     try:
         with zipfile.ZipFile(io.BytesIO(contents)) as z:
-            py_files=[n for n in z.namelist() if n.endswith('.py') and not any(part.startswith(('.', '__', 'venv', 'env')) for part in n.split('/'))]
-            if not py_files:
+            candidate_infos = []
+            for info in z.infolist():
+                name = info.filename
+                # Path traversal defense
+                if name.startswith('/') or '..' in name or '\\..' in name:
+                    raise HTTPException(422, 'Insecure path traversal detected in ZIP archive.')
+                if name.endswith('.py') and not any(part.startswith(('.', '__', 'venv', 'env')) for part in name.split('/')):
+                    if info.file_size > MAX_UNCOMPRESSED_FILE:
+                        raise HTTPException(413, f"File '{name}' exceeds 1 MB uncompressed file limit.")
+                    running_uncompressed_bytes += info.file_size
+                    if running_uncompressed_bytes > MAX_UNCOMPRESSED_TOTAL:
+                        raise HTTPException(413, 'ZIP archive exceeds 15 MB uncompressed size limit (Zip Bomb protection).')
+                    candidate_infos.append(info)
+
+            if not candidate_infos:
                 raise HTTPException(422,'No valid Python (.py) source files found in the uploaded archive.')
-            if len(py_files)>40:
-                raise HTTPException(422,'Archive exceeds 40 Python files limit.')
+            if len(candidate_infos) > MAX_PY_FILES:
+                raise HTTPException(422, f'Archive exceeds {MAX_PY_FILES} Python files limit.')
             
-            for name in py_files:
-                raw=z.read(name).decode('utf-8',errors='replace')
+            for info in candidate_infos:
+                raw=z.read(info.filename).decode('utf-8',errors='replace')
                 res=audit_code(raw)
                 loc=res['metrics']['loc']
                 findings=res['findings']
@@ -104,15 +131,17 @@ async def audit_project_zip(file:UploadFile=File(...),user=Depends(current_user)
                 all_findings_count+=len(findings)
                 file_high=sum(1 for f in findings if f.get('severity')=='HIGH')
                 high_count+=file_high
-                file_rows.append(f"| `{name}` | {loc} | {res['metrics']['cyclomatic_complexity']} | {len(findings)} | {file_high} |")
+                file_rows.append(f"| `{info.filename}` | {loc} | {res['metrics']['cyclomatic_complexity']} | {len(findings)} | {file_high} |")
                 for f in findings:
-                    findings_details.append(f"- **`{name}` (Line {f.get('line','?')})** `[{f.get('severity','MED')}]` {f.get('rule_id')}: {f.get('message')}")
+                    findings_details.append(f"- **`{info.filename}` (Line {f.get('line','?')})** `[{f.get('severity','MED')}]` {f.get('rule_id')}: {f.get('message')}")
     except zipfile.BadZipFile:
         raise HTTPException(422,'Corrupted or invalid ZIP archive.')
 
+    elapsed=max(1, round((time.perf_counter()-started)*1000))
+
     md=[
         "## 📦 Multi-File Project Security & Quality Audit\n",
-        f"**Audited Archive:** `{file.filename}` · Scanned **{len(py_files)}** Python modules\n",
+        f"**Audited Archive:** `{file.filename}` · Scanned **{len(candidate_infos)}** Python modules\n",
         "### 📊 Project Aggregated Metrics",
         f"- **Total Lines of Code (LOC):** `{total_loc}`",
         f"- **Total Static Findings:** `{all_findings_count}`",
@@ -136,7 +165,7 @@ async def audit_project_zip(file:UploadFile=File(...),user=Depends(current_user)
         engine='bandit+ast',
         cached=False,
         saved=False,
-        duration_ms=50,
+        duration_ms=elapsed,
         disclaimer='Multi-file project static inspection completed without code execution.'
     )
 

@@ -6,3 +6,4 @@ python-dotenv>=1.0,<2
 google-genai>=2.20,<3
 ruff>=0.9,<1
 bandit>=1.8,<2
+python-multipart>=0.0.9,<1

@@ -15,12 +15,14 @@
     <aside class="sidebar" id="sidebar" aria-label="Application sidebar">
       <div class="brand-block">
         <a class="brand" href="/" aria-label="कोडनीती AI home"><span class="brand-symbol">&lt;/&gt;</span><span class="brand-text"><span lang="mr" class="marathi">कोडनीती</span><small>AI</small></span></a>
-        <p class="brand-subtitle">CODE INTELLIGENCE PLATFORM</p>
+        <p class="brand-subtitle">CODE INTELLIGENCE</p>
+        <p class="brand-subtitle">PLATFORM</p>
       </div>
       <div class="sidebar-body">
         <p class="nav-label">WORKSPACE</p>
         <nav class="tool-nav" aria-label="Code analysis tools">
           <button class="tool-link active" data-tool="verify-repair"><span class="tool-index">★</span> Verify &amp; Repair</button>
+          <button class="tool-link" data-tool="audit-project"><span class="tool-index">📁</span> Project Audit (ZIP)</button>
           <button class="tool-link" data-tool="optimize"><span class="tool-index">01</span> Optimise code</button>
           <button class="tool-link" data-tool="complexity"><span class="tool-index">02</span> Complexity analysis</button>
           <button class="tool-link" data-tool="debug"><span class="tool-index">03</span> Debug assistant</button>
@@ -64,6 +66,18 @@
               <div class="input-body" id="singleInput"><div class="code-wrap"><div class="line-gutter" id="lineGutter" aria-hidden="true">1</div><textarea id="codeInput" spellcheck="false" aria-label="Source code" placeholder="Paste your code here..."></textarea></div></div>
               <div class="input-body hidden" id="promptInput"><label for="promptInputText" class="text-field-label">Describe what you want to build</label><textarea id="promptInputText" class="prose-editor" placeholder="Describe your requirements, language, input and expected output..."></textarea></div>
               <div class="input-body hidden" id="compareInput"><label class="text-field-label" for="beforeInput">Original version</label><textarea class="comparison-editor" id="beforeInput" spellcheck="false" placeholder="Original code"></textarea><label class="text-field-label" for="afterInput">Modified version</label><textarea class="comparison-editor" id="afterInput" spellcheck="false" placeholder="Updated code"></textarea></div>
+              <div class="input-body hidden" id="zipInput">
+                <div class="zip-dropzone" id="zipDropzone">
+                  <input type="file" id="zipFileInput" accept=".zip" class="hidden">
+                  <div class="zip-prompt">
+                    <span class="zip-icon">📦</span>
+                    <p class="zip-title"><strong>Upload Python Project Archive</strong></p>
+                    <p class="zip-help">Static security, AST pattern matching &amp; complexity audit across all Python files</p>
+                    <button type="button" class="text-button zip-select-btn" id="browseZipBtn">Choose .zip file (max 5 MB) <span>↗</span></button>
+                    <div id="zipFileInfo" class="zip-info hidden"></div>
+                  </div>
+                </div>
+              </div>
               <div class="editor-footer"><span id="editorCount">1 line · 0 characters</span><button class="text-button" id="clearBtn">Clear</button></div>
               <div class="action-footer"><label class="save-preference"><input id="saveHistory" type="checkbox"><span><strong>Save to my history</strong><small>Off by default · your source remains private</small></span></label><button class="primary-button" id="runBtn"> <span id="runLabel">Analyse code</span><span aria-hidden="true">→</span></button></div>
             </section>

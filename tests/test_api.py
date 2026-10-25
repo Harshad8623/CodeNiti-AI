@@ -186,3 +186,47 @@ def test_closed_loop_repair_verification(signed_in, monkeypatch):
     assert 'Closed-Loop' in data['result'] or 'Verification' in data['result']
     assert data['engine'] == 'bandit+ast+gemini'
     assert data['tool'] == 'verify-repair'
+
+
+def test_audit_project_zip_valid_and_security(signed_in):
+    import io
+    import zipfile
+
+    client = signed_in
+
+    # 1. Non-zip upload rejected
+    r = client.post('/api/audit-project', files={'file': ('test.txt', b'hello', 'text/plain')})
+    assert r.status_code == 422
+
+    # 2. Valid zip with 2 Python files
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, 'w') as z:
+        z.writestr('main.py', 'def add(a, b):\n    return a + b\n')
+        z.writestr('utils.py', 'import subprocess\ndef run(cmd):\n    subprocess.run(cmd, shell=True)\n')
+    buf.seek(0)
+
+    r = client.post('/api/audit-project', files={'file': ('project.zip', buf.getvalue(), 'application/zip')})
+    assert r.status_code == 200
+    data = r.json()
+    assert data['tool'] == 'audit-project'
+    assert 'Multi-File Project Security & Quality Audit' in data['result']
+    assert '`main.py`' in data['result']
+    assert '`utils.py`' in data['result']
+
+    # 3. Path traversal rejected
+    buf_bad = io.BytesIO()
+    with zipfile.ZipFile(buf_bad, 'w') as z:
+        z.writestr('../evil.py', 'print("malicious")')
+    buf_bad.seek(0)
+    r_bad = client.post('/api/audit-project', files={'file': ('bad.zip', buf_bad.getvalue(), 'application/zip')})
+    assert r_bad.status_code == 422
+    assert 'traversal' in r_bad.json()['detail'].lower()
+
+    # 4. Empty python archive rejected
+    buf_empty = io.BytesIO()
+    with zipfile.ZipFile(buf_empty, 'w') as z:
+        z.writestr('readme.txt', 'no python here')
+    buf_empty.seek(0)
+    r_empty = client.post('/api/audit-project', files={'file': ('empty.zip', buf_empty.getvalue(), 'application/zip')})
+    assert r_empty.status_code == 422
+
