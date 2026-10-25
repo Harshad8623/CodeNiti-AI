@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#f6f5f2">
+  <meta name="description" content="कोडनीती AI — a final-year major project in AI-powered code intelligence, optimisation, complexity analysis and security auditing.">
+  <title>कोडनीती AI · Code intelligence workspace</title>
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+  <link rel="stylesheet" href="/static/css/style.css">
+  <script defer src="/static/js/app.js"></script>
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar" id="sidebar" aria-label="Application sidebar">
+      <div class="brand-block">
+        <a class="brand" href="/" aria-label="कोडनीती AI home"><span class="brand-symbol">&lt;/&gt;</span><span class="brand-text"><span lang="mr" class="marathi">कोडनीती</span><small>AI</small></span></a>
+        <p class="brand-subtitle">CODE INTELLIGENCE PLATFORM</p>
+      </div>
+      <div class="sidebar-body">
+        <p class="nav-label">WORKSPACE</p>
+        <nav class="tool-nav" aria-label="Code analysis tools">
+          <button class="tool-link active" data-tool="optimize"><span class="tool-index">01</span> Optimise code</button>
+          <button class="tool-link" data-tool="complexity"><span class="tool-index">02</span> Complexity analysis</button>
+          <button class="tool-link" data-tool="debug"><span class="tool-index">03</span> Debug assistant</button>
+          <button class="tool-link" data-tool="security"><span class="tool-index">04</span> Security audit</button>
+          <button class="tool-link" data-tool="testcases"><span class="tool-index">05</span> Generate tests</button>
+          <button class="tool-link" data-tool="generate"><span class="tool-index">06</span> Code generator</button>
+          <button class="tool-link" data-tool="compare"><span class="tool-index">07</span> Compare code</button>
+          <button class="tool-link" data-tool="beautify"><span class="tool-index">08</span> Python formatter</button>
+        </nav>
+        <div class="nav-divider"></div>
+        <p class="nav-label">YOUR SPACE</p>
+        <button id="historyBtn" class="sidebar-action"><span>Saved analyses</span><span id="historyCount" class="quiet-counter">0</span></button>
+        <button id="insightsBtn" class="sidebar-action">Performance metrics</button>
+        <button id="aboutBtn" class="sidebar-action">About the project</button>
+      </div>
+      <div class="sidebar-bottom"><span class="square-dot"></span><span id="apiState">Checking services…</span><span class="version">v3.0</span></div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div class="topbar-left"><button id="menuBtn" class="icon-only mobile-only" aria-label="Open navigation">☰</button><span class="top-eyebrow">ELECTRONICS & COMPUTER ENGINEERING</span></div>
+        <div class="topbar-right"><span class="cloud-status" id="engineStatus">Checking engine</span><span class="topbar-separator"></span><button class="profile" id="accountBtn" type="button"><span class="avatar" id="avatar">?</span><span id="accountLabel">Sign in</span><span class="chevron">⌄</span></button></div>
+      </header>
+
+      <div class="main-content">
+        <section class="intro" id="intro">
+          <div class="intro-copy">
+            <p class="overline"><span class="overline-line"></span> FINAL YEAR MAJOR PROJECT · 2026–27</p>
+            <h1><span lang="mr" class="marathi">कोडनीती</span> <span class="ai-suffix">AI<span class="title-period">.</span></span></h1>
+            <p class="intro-description">AI Powered Code Intelligence Platform for Automated Optimization, Complexity Analysis &amp; Security Auditing.</p>
+          </div>
+          <div class="intro-aside"><div class="intro-aside-label">BUILT AT</div><strong>CSMSS Chh. Shahu College of Engineering</strong><span>Chhatrapati Sambhajinagar, Maharashtra</span></div>
+        </section>
+
+        <section class="studio" id="studio">
+          <div class="section-heading"><div><p class="overline">DEVELOPER WORKSPACE</p><h2 id="toolHeading">Optimise code</h2><p class="section-desc" id="toolDescription">Identify improvements in performance, clarity and correctness.</p></div><button class="text-button" id="sampleBtn">Load example <span aria-hidden="true">↗</span></button></div>
+          <div class="workspace-grid">
+            <section class="panel editor-panel" aria-label="Code editor">
+              <div class="panel-heading"><div class="panel-title"><span class="panel-icon">{ }</span> INPUT</div><span class="panel-subtext">01 / SOURCE</span></div>
+              <div class="editor-toolbar"><span id="fileLabel" class="filename">snippet.py</span><label class="language-control" for="language"><span>Language</span><select id="language"><option value="python">Python</option><option value="javascript">JavaScript</option><option value="typescript">TypeScript</option><option value="java">Java</option><option value="cpp">C++</option><option value="c">C</option><option value="csharp">C#</option><option value="go">Go</option><option value="rust">Rust</option><option value="sql">SQL</option><option value="html">HTML</option><option value="css">CSS</option></select></label></div>
+              <div class="input-body" id="singleInput"><div class="code-wrap"><div class="line-gutter" id="lineGutter" aria-hidden="true">1</div><textarea id="codeInput" spellcheck="false" aria-label="Source code" placeholder="Paste your code here..."></textarea></div></div>
+              <div class="input-body hidden" id="promptInput"><label for="promptInputText" class="text-field-label">Describe what you want to build</label><textarea id="promptInputText" class="prose-editor" placeholder="Describe your requirements, language, input and expected output..."></textarea></div>
+              <div class="input-body hidden" id="compareInput"><label class="text-field-label" for="beforeInput">Original version</label><textarea class="comparison-editor" id="beforeInput" spellcheck="false" placeholder="Original code"></textarea><label class="text-field-label" for="afterInput">Modified version</label><textarea class="comparison-editor" id="afterInput" spellcheck="false" placeholder="Updated code"></textarea></div>
+              <div class="editor-footer"><span id="editorCount">1 line · 0 characters</span><button class="text-button" id="clearBtn">Clear</button></div>
+              <div class="action-footer"><label class="save-preference"><input id="saveHistory" type="checkbox"><span><strong>Save to my history</strong><small>Off by default · your source remains private</small></span></label><button class="primary-button" id="runBtn"> <span id="runLabel">Analyse code</span><span aria-hidden="true">→</span></button></div>
+            </section>
+            <section class="panel output-panel" aria-label="Analysis report">
+              <div class="panel-heading"><div class="panel-title"><span class="panel-icon small-icon">↗</span> ANALYSIS REPORT</div><span class="status-tag" id="resultStatus">READY</span></div>
+              <div class="result-toolbar"><span id="resultMeta">Awaiting your first run</span><div class="result-actions"><button id="copyBtn" disabled title="Copy result">Copy</button><button id="downloadBtn" disabled title="Download Markdown">Export ↗</button></div></div>
+              <div id="outputArea" class="output-body" aria-live="polite"><div class="empty-report"><span class="empty-symbol">⌁</span><h3>A clearer view of your code.</h3><p>Select a tool, paste a snippet and run an analysis. Your report will appear here.</p><span class="keyboard-hint">Ctrl / ⌘ + Enter to run</span></div></div>
+              <div class="output-footer"><span>Results are suggestions, not execution or proof.</span><span id="engineName">Hybrid analysis</span></div>
+            </section>
+          </div>
+          <p class="under-workspace-note">Your code is not stored unless you choose to save an analysis. AI tools send input to Google Gemini; local tools process code on this server without executing it.</p>
+        </section>
+
+        <section class="project-footer"><div><span class="foot-caption">ACADEMIC PROJECT</span><p>Department of Electronics &amp; Computer Engineering</p></div><div><span class="foot-caption">GUIDED BY</span><p>Prof. J. N. Mohite</p></div><button class="footer-link" id="footerAbout">Team &amp; project information ↗</button></section>
+      </div>
+    </main>
+  </div>
+
+  <div id="scrim" class="scrim hidden"></div>
+  <section class="side-drawer" id="drawer" role="dialog" aria-modal="true" aria-labelledby="drawerHeading" aria-hidden="true"><div class="drawer-header"><div><span class="overline">YOUR WORKSPACE</span><h2 id="drawerHeading">Saved analyses</h2></div><button id="drawerClose" class="icon-only" aria-label="Close panel">×</button></div><div class="drawer-content" id="drawerContent"></div><div class="drawer-bottom"><button id="clearHistoryBtn" class="danger-button hidden">Delete saved history</button></div></section>
+
+  <div id="authOverlay" class="auth-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="authHeading">
+    <section class="auth-card">
+      <div class="auth-mark"><span class="brand-symbol">&lt;/&gt;</span><strong lang="mr" class="marathi">कोडनीती <span>AI</span></strong></div>
+      <p class="overline">WELCOME TO THE WORKSPACE</p><h2 id="authHeading">Sign in to continue</h2>
+      <p class="auth-lead">Your analyses are linked to your account, not a shared browser session.</p>
+      <div class="auth-tabs" role="tablist"><button class="active" id="loginTab" role="tab" aria-selected="true">Sign in</button><button id="registerTab" role="tab" aria-selected="false">Create account</button></div>
+      <form id="authForm" autocomplete="on">
+        <label id="nameWrap" class="form-field hidden">Full name<input id="authName" name="name" type="text" autocomplete="name" maxlength="70" minlength="2"></label>
+        <label class="form-field">Email address<input id="authEmail" name="email" type="email" autocomplete="email" maxlength="254" required placeholder="you@example.com"></label>
+        <label class="form-field">Password<input id="authPassword" name="password" type="password" minlength="10" maxlength="128" required autocomplete="current-password" placeholder="At least 10 characters"></label>
+        <p id="authError" class="form-error hidden" role="alert"></p>
+        <button type="submit" class="primary-button auth-submit" id="authSubmit">Sign in <span>→</span></button>
+      </form>
+      <p class="auth-footnote">Academic prototype · Use a unique password. Do not submit proprietary code or credentials.</p>
+    </section>
+  </div>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+</body>
+</html>

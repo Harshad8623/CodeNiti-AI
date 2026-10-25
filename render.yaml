@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: codeniti-ai
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT --workers 1
+    plan: free
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: APP_ENV
+        value: production
+      - key: GEMINI_MODEL
+        value: gemini-2.5-flash
+      - key: ENABLE_SIGNUP
+        value: "true"
+      - key: GEMINI_API_KEY
+        sync: false
