@@ -169,3 +169,20 @@ def test_authenticated_rate_limit_is_per_account(client):
         'display_name':'Second Student','email':'second@uni.example','password':'AnotherExamplePassword-2026'})
     assert second.status_code == 201
     assert client.post('/api/compare',json={'code1':'x','code2':'z'}).status_code == 200
+
+
+def test_closed_loop_repair_verification(signed_in, monkeypatch):
+    from unittest.mock import AsyncMock
+    import services.gemini as gemini_mod
+    client = signed_in
+    clean_code = "```python\nimport os, subprocess\npath = os.environ.get('USER_DIR', '.')\nsubprocess.run(['ls', path], check=True)\n```"
+    mock_repair = AsyncMock(return_value=clean_code)
+    monkeypatch.setattr(gemini_mod, 'call_gemini', mock_repair)
+
+    bad_code = 'import subprocess\napi_key = "secret_12345"\nsubprocess.run("ls " + path, shell=True)\n'
+    resp = client.post('/api/verify-repair', json={'code': bad_code, 'language': 'python'})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert 'Closed-Loop' in data['result'] or 'Verification' in data['result']
+    assert data['engine'] == 'bandit+ast+gemini'
+    assert data['tool'] == 'verify-repair'

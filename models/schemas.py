@@ -43,7 +43,7 @@ class CompareRequest(BaseAnalysis):
 class AnalysisResponse(BaseModel):
     tool: str
     result: str
-    engine: Literal['gemini', 'ruff', 'diff', 'bandit']
+    engine: str = 'gemini'
     cached: bool = False
     duration_ms: int = 0
     saved: bool = False

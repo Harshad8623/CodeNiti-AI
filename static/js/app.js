@@ -4,6 +4,7 @@
   const $ = selector => document.querySelector(selector);
   const $$ = selector => Array.from(document.querySelectorAll(selector));
   const TOOLS = {
+    'verify-repair':['Verify & Auto-Repair','Detect AST & Bandit issues, synthesize targeted AI patch, and re-scan to prove resolution.','Verify & Repair Code','single'],
     optimize:['Optimise code','Identify improvements in performance, clarity and correctness.','Analyse code','single'],
     complexity:['Complexity analysis','Estimate Big-O behaviour and algorithmic trade-offs.','Analyse complexity','single'],
     debug:['Debug assistant','Identify possible root causes and propose regression tests.','Debug code','single'],
@@ -14,6 +15,7 @@
     beautify:['Python formatter','Format Python predictably using Ruff without executing it.','Format code','single']
   };
   const EXAMPLES = {
+    'verify-repair':'import subprocess\napi_key = "prod_secret_token_12345"\n\ndef execute_command(user_dir):\n    try:\n        assert len(user_dir) > 0\n        subprocess.run("ls " + user_dir, shell=True)\n    except:\n        print("Execution failed")\n',
     optimize:'def has_duplicate(nums):\n    for i in range(len(nums)):\n        for j in range(i + 1, len(nums)):\n            if nums[i] == nums[j]:\n                return True\n    return False',
     complexity:'def count_pairs(nums):\n    count = 0\n    for x in nums:\n        for y in nums:\n            if x + y == 10:\n                count += 1\n    return count',
     debug:'def average(numbers):\n    total = 0\n    for i in range(len(numbers) + 1):\n        total += numbers[i]\n    return total / len(numbers)',
@@ -23,7 +25,7 @@
     compare:['def square(x):\n    return x * 2','def square(x):\n    return x * x'],
     beautify:'def greet(name:str)->str:\n  print("Hello",name)\n  return "hello " +name'
   };
-  let tool='optimize',user=null,mode='login',running=false,result='',toastHandle,drawerKind='history';
+  let tool='verify-repair',user=null,mode='login',running=false,result='',toastHandle,drawerKind='history';
   const code=$('#codeInput'),prompt=$('#promptInputText'),before=$('#beforeInput'),after=$('#afterInput');
   const modifiedHeaders={'Content-Type':'application/json','X-Requested-With':'XMLHttpRequest'};
   function toast(message){const el=$('#toast');el.textContent=message;el.classList.add('visible');clearTimeout(toastHandle);toastHandle=setTimeout(()=>el.classList.remove('visible'),3700);}
@@ -70,5 +72,5 @@
   $('#historyBtn').addEventListener('click',showHistory);$('#insightsBtn').addEventListener('click',()=>refreshMetrics(true));$('#aboutBtn').addEventListener('click',showAbout);$('#footerAbout').addEventListener('click',showAbout);$('#accountBtn').addEventListener('click',()=>user?showAccount():openAuth('login'));
   $('#drawerClose').addEventListener('click',closeDrawer);$('#scrim').addEventListener('click',()=>{closeDrawer();$('#sidebar').classList.remove('open');});$('#menuBtn').addEventListener('click',()=>{closeDrawer();$('#sidebar').classList.toggle('open');});
   $('#clearHistoryBtn').addEventListener('click',async()=>{if(!confirm('Delete all saved analyses and their caches?'))return;try{await api('/api/history',{method:'DELETE'});showHistory();refreshMetrics(false);toast('History and cache cleared.');}catch(e){toast(e.message);}});
-  setTool('optimize');updateCount();refreshService();hydrateAuth();
+  setTool('verify-repair');updateCount();refreshService();hydrateAuth();
 })();
