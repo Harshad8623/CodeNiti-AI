@@ -69,7 +69,7 @@ def analyze_ast(source_code: str) -> dict[str, Any]:
         elif isinstance(node, ast.ClassDef):
             class_count += 1
 
-        # Check for dangerous builtins: eval(), exec()
+        # Check for dangerous builtins: eval(), exec(), os.system()
         elif isinstance(node, ast.Call):
             if isinstance(node.func, ast.Name):
                 if node.func.id in ('eval', 'exec'):
@@ -89,7 +89,9 @@ def analyze_ast(source_code: str) -> dict[str, Any]:
                         'tool': 'ast'
                     })
             elif isinstance(node.func, ast.Attribute):
-                if node.func.attr in ('run', 'Popen', 'call', 'check_output', 'check_call'):
+                attr = node.func.attr
+                # Subprocess shell=True
+                if attr in ('run', 'Popen', 'call', 'check_output', 'check_call'):
                     for kw in node.keywords:
                         if kw.arg == 'shell' and isinstance(kw.value, ast.Constant) and kw.value.value is True:
                             findings.append({
@@ -99,6 +101,65 @@ def analyze_ast(source_code: str) -> dict[str, Any]:
                                 'message': "Subprocess call with 'shell=True' detected. This is a critical command injection vector if untrusted input is passed.",
                                 'tool': 'ast'
                             })
+                # SQL Injection detection on .execute() / .executemany()
+                elif attr in ('execute', 'executemany') and node.args:
+                    arg0 = node.args[0]
+                    is_formatted = isinstance(arg0, ast.JoinedStr) or (
+                        isinstance(arg0, ast.BinOp) and isinstance(arg0.op, (ast.Add, ast.Mod))
+                    ) or (
+                        isinstance(arg0, ast.Call) and isinstance(arg0.func, ast.Attribute) and arg0.func.attr == 'format'
+                    )
+                    if is_formatted:
+                        findings.append({
+                            'rule_id': 'AST_SQL_INJECTION',
+                            'severity': 'HIGH',
+                            'line': node.lineno,
+                            'message': "SQL query constructed via dynamic string formatting/concatenation. Use parameterized queries to eliminate SQL injection.",
+                            'tool': 'ast'
+                        })
+                # Insecure deserialization via pickle / yaml
+                elif attr in ('load', 'loads'):
+                    val = getattr(node.func, 'value', None)
+                    if isinstance(val, ast.Name) and val.id in ('pickle', '_pickle', 'cPickle', 'dill', 'shelve'):
+                        findings.append({
+                            'rule_id': 'AST_INSECURE_DESERIALIZATION',
+                            'severity': 'HIGH',
+                            'line': node.lineno,
+                            'message': f"Insecure deserialization via '{val.id}.{attr}()'. Arbitrary code execution can occur when loading untrusted data.",
+                            'tool': 'ast'
+                        })
+                    elif isinstance(val, ast.Name) and val.id == 'yaml' and attr == 'load':
+                        has_safe_loader = any(kw.arg == 'Loader' and 'SafeLoader' in ast.dump(kw.value) for kw in node.keywords)
+                        if not has_safe_loader:
+                            findings.append({
+                                'rule_id': 'AST_INSECURE_YAML',
+                                'severity': 'HIGH',
+                                'line': node.lineno,
+                                'message': "Insecure 'yaml.load()' without SafeLoader. Use 'yaml.safe_load()' to avoid arbitrary code execution.",
+                                'tool': 'ast'
+                            })
+                # Weak cryptographic hashing (MD5 / SHA1)
+                elif attr in ('md5', 'sha1'):
+                    val = getattr(node.func, 'value', None)
+                    if isinstance(val, ast.Name) and val.id == 'hashlib':
+                        findings.append({
+                            'rule_id': 'AST_WEAK_HASH',
+                            'severity': 'MEDIUM',
+                            'line': node.lineno,
+                            'message': f"Weak cryptographic hash 'hashlib.{attr}()' detected. Vulnerable to collision attacks; use SHA-256 for secure hashing.",
+                            'tool': 'ast'
+                        })
+                # Insecure temporary file
+                elif attr == 'mktemp':
+                    val = getattr(node.func, 'value', None)
+                    if isinstance(val, ast.Name) and val.id == 'tempfile':
+                        findings.append({
+                            'rule_id': 'AST_INSECURE_TEMPFILE',
+                            'severity': 'HIGH',
+                            'line': node.lineno,
+                            'message': "Insecure 'tempfile.mktemp()' creates file race conditions. Use 'tempfile.NamedTemporaryFile()' or 'tempfile.mkstemp()'.",
+                            'tool': 'ast'
+                        })
 
         # Check for bare except: (catches KeyboardInterrupt and hides critical bugs)
         elif isinstance(node, ast.ExceptHandler):
@@ -150,6 +211,10 @@ def analyze_ast(source_code: str) -> dict[str, Any]:
                                 })
 
     defined_functions = [n.name for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
+    function_signatures = {
+        n.name: [arg.arg for arg in n.args.args]
+        for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
     defined_classes = [n.name for n in ast.walk(tree) if isinstance(n, ast.ClassDef)]
 
     return {
@@ -160,6 +225,7 @@ def analyze_ast(source_code: str) -> dict[str, Any]:
         'function_count': function_count,
         'class_count': class_count,
         'defined_functions': defined_functions,
+        'function_signatures': function_signatures,
         'defined_classes': defined_classes,
         'findings': findings
     }

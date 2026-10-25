@@ -64,6 +64,7 @@ def audit_code(code: str) -> dict[str, Any]:
         'syntax_error': ast_res.get('syntax_error'),
         'bandit_available': bandit_available,
         'defined_functions': ast_res.get('defined_functions', []),
+        'function_signatures': ast_res.get('function_signatures', {}),
         'defined_classes': ast_res.get('defined_classes', []),
         'metrics': {
             'loc': ast_res.get('loc', 0),
@@ -143,7 +144,8 @@ async def execute_repair_verification(code: str, language: str = 'python') -> di
         'target_violations': findings_str,
         'repair_instruction': (
             "Refactor this Python code to fix EVERY listed static analysis and security violation. "
-            "Maintain the original business logic. "
+            "Maintain the original business logic, function names, and parameter signatures. "
+            "Never delete functions or replace bodies with empty 'pass'. "
             "Output the full refactored Python code inside a ```python ``` code block, "
             "followed by a concise bullet list of changes made."
         )
@@ -158,6 +160,28 @@ async def execute_repair_verification(code: str, language: str = 'python') -> di
 
     # Stage 3: Independent Re-scan of the repaired code!
     after_audit = audit_code(repaired_code)
+
+    # Optional 2nd self-healing pass if syntax error or critical issues remain
+    if not after_audit['valid_syntax']:
+        try:
+            followup_prompt = {
+                'code': repaired_code,
+                'language': 'python',
+                'target_violations': f"Syntax Error: {after_audit['syntax_error']}",
+                'repair_instruction': (
+                    f"The previous refactoring produced a syntax error ({after_audit['syntax_error']}). "
+                    "Fix this syntax error immediately and output valid, complete Python code inside ```python ```."
+                )
+            }
+            gemini_output2 = await call_gemini('optimize', followup_prompt)
+            repaired_code2 = extract_code_block(gemini_output2)
+            if repaired_code2:
+                after_audit2 = audit_code(repaired_code2)
+                if after_audit2['valid_syntax']:
+                    repaired_code = repaired_code2
+                    after_audit = after_audit2
+        except Exception:
+            pass
     
     # Accurate multi-instance counting via collections.Counter
     from collections import Counter
@@ -184,13 +208,25 @@ async def execute_repair_verification(code: str, language: str = 'python') -> di
     loc_before = before_audit['metrics']['loc']
     loc_after = after_audit['metrics']['loc']
     
+    sig_before = before_audit.get('function_signatures', {})
+    sig_after = after_audit.get('function_signatures', {})
+    sig_mismatches = []
+    for fn, params_before in sig_before.items():
+        if fn in sig_after and params_before != sig_after[fn]:
+            sig_mismatches.append(f"`{fn}({', '.join(params_before)})` ➔ `({', '.join(sig_after[fn])})`")
+
     structural_warning = None
-    if deleted_functions:
+    if not after_audit['valid_syntax']:
+        structural_warning = f"The generated repair has invalid Python syntax: {after_audit['syntax_error']}."
+        status = 'SYNTAX_ERROR_IN_REPAIR'
+    elif deleted_functions:
         structural_warning = f"Function(s) `{', '.join(deleted_functions)}` were removed by the repair. Business logic was deleted."
+        status = 'FUNCTIONALITY_RISK_DETECTED'
+    elif sig_mismatches:
+        structural_warning = f"Function signature altered: {', '.join(sig_mismatches)}. Calling code may break."
+        status = 'FUNCTIONALITY_RISK_DETECTED'
     elif loc_before >= 3 and loc_after <= 1:
         structural_warning = "The code body was replaced with empty/trivial statement (e.g. `pass`). Business functionality was removed."
-
-    if structural_warning:
         status = 'FUNCTIONALITY_RISK_DETECTED'
     elif remaining_count == 0 and new_count == 0:
         status = 'STATIC_CHECKS_PASSED'
@@ -213,8 +249,15 @@ async def execute_repair_verification(code: str, language: str = 'python') -> di
         f"- **Issues Successfully Resolved:** `{resolved_count}` ✅",
         f"- **Remaining Unresolved Issues:** `{remaining_count}`",
         f"- **New Issues Introduced by Fix:** `{new_count}` " + ("✅ (None)" if new_count == 0 else "⚠️ (Review needed)"),
-        f"- **Cyclomatic Complexity:** `{c_before}` ➔ `{c_after}` " + ("(Improved)" if c_after <= c_before else "(Increased)"),
+        f"- **Cyclomatic Complexity:** `{c_before}` ➔ `{c_after}` " + ("(Improved)" if c_after <= c_before else "(Maintained)" if c_after == c_before else "(Increased)"),
         f"- **Calculated Risk Score:** `{r_before}` ➔ `{r_after}` " + (f"({round((r_before - r_after) / max(1, r_before) * 100)}% reduction)" if r_before > 0 else ""),
+        "\n### 📋 Verification Summary Matrix",
+        "| Metric | Pre-Repair | Post-Repair | Status |",
+        "| :--- | :---: | :---: | :---: |",
+        f"| Static Violations | {len(initial_findings)} | {len(after_audit['findings'])} | {'✅ Resolved' if len(after_audit['findings']) == 0 else '⚠️ Remaining'} |",
+        f"| Cyclomatic Complexity | {c_before} | {c_after} | {'✅ Optimized' if c_after <= c_before else '⚠️ Increased'} |",
+        f"| Security Risk Score | {r_before} | {r_after} | {'✅ Clean (0)' if r_after == 0 else f'{r_after} pts'} |",
+        f"| Structural Integrity | {len(sig_before)} funcs | {len(sig_after)} funcs | {'✅ Preserved' if not structural_warning else '⚠️ Issue Detected'} |",
     ]
 
     if structural_warning:

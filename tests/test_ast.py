@@ -156,3 +156,70 @@ def fetch_data(user_id):
     assert res['status'] == 'FUNCTIONALITY_RISK_DETECTED'
     assert res['structural_warning'] is not None
     assert 'deleted' in res['structural_warning'].lower() or 'removed' in res['structural_warning'].lower()
+
+
+def test_sql_injection_detection():
+    code = """
+def get_user(cursor, user_id):
+    cursor.execute(f"SELECT * FROM users WHERE id = '{user_id}'")
+    cursor.execute("SELECT * FROM items WHERE name = '" + user_id + "'")
+"""
+    res = analyze_ast(code)
+    rule_ids = [f['rule_id'] for f in res['findings']]
+    assert 'AST_SQL_INJECTION' in rule_ids
+    assert rule_ids.count('AST_SQL_INJECTION') == 2
+
+
+def test_pickle_deserialization():
+    code = """
+import pickle
+def load_data(raw):
+    return pickle.loads(raw)
+"""
+    res = analyze_ast(code)
+    rule_ids = [f['rule_id'] for f in res['findings']]
+    assert 'AST_INSECURE_DESERIALIZATION' in rule_ids
+
+
+def test_weak_hash_md5_sha1():
+    code = """
+import hashlib
+def hash_token(data):
+    return hashlib.md5(data.encode()).hexdigest()
+"""
+    res = analyze_ast(code)
+    rule_ids = [f['rule_id'] for f in res['findings']]
+    assert 'AST_WEAK_HASH' in rule_ids
+
+
+def test_insecure_tempfile_mktemp():
+    code = """
+import tempfile
+def create_scratch():
+    path = tempfile.mktemp()
+    return path
+"""
+    res = analyze_ast(code)
+    rule_ids = [f['rule_id'] for f in res['findings']]
+    assert 'AST_INSECURE_TEMPFILE' in rule_ids
+
+
+def test_parameter_signature_preservation_and_mismatch(monkeypatch):
+    """Verify that altering a function's parameter signature triggers FUNCTIONALITY_RISK_DETECTED."""
+    import asyncio
+    import services.gemini as gemini_mod
+
+    original_code = """
+def login(username, password, remember_me):
+    eval(username)
+    return True
+"""
+    # Simulate repair altering parameter signature from 3 args to 1 arg
+    altered_code = "```python\ndef login(username):\n    return True\n```"
+    mock_gemini = AsyncMock(return_value=altered_code)
+    monkeypatch.setattr(gemini_mod, 'call_gemini', mock_gemini)
+
+    res = asyncio.run(execute_repair_verification(original_code))
+    assert res['status'] == 'FUNCTIONALITY_RISK_DETECTED'
+    assert 'signature' in res['structural_warning'].lower()
+

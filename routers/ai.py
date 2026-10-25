@@ -1,8 +1,8 @@
 """Protected analysis and private history endpoints with per-user metrics."""
 import shutil
-from fastapi import APIRouter,HTTPException,Request,Query,Depends,UploadFile,File
+from fastapi import APIRouter,HTTPException,Request,Query,Depends,UploadFile,File,Form
 from config import settings
-from database import list_history,remove_history,clear_history,workspace_stats
+from database import list_history,remove_history,clear_history,workspace_stats,save_history
 from models.schemas import CodeRequest,CompareRequest,GenerateRequest,AnalysisResponse,HistoryEntry
 from routers.auth import current_user
 from services.gemini import AIServiceError
@@ -77,7 +77,7 @@ async def verify_repair(req:CodeRequest,user=Depends(current_user)):
         raise HTTPException(502,"Automated repair verification failed. Please try again.") from exc
 
 @router.post('/audit-project',response_model=AnalysisResponse)
-async def audit_project_zip(file:UploadFile=File(...),user=Depends(current_user)):
+async def audit_project_zip(file:UploadFile=File(...),persist_history:bool=Form(False,alias='save_history'),user=Depends(current_user)):
     import time
     started=time.perf_counter()
     if not file.filename.lower().endswith('.zip'):
@@ -93,7 +93,10 @@ async def audit_project_zip(file:UploadFile=File(...),user=Depends(current_user)
     total_loc=0
     all_findings_count=0
     high_count=0
-    file_rows=[]
+    med_count=0
+    low_count=0
+    total_complexity=0
+    modules=[]
     findings_details=[]
     
     MAX_UNCOMPRESSED_TOTAL = 15 * 1024 * 1024  # 15 MB total expanded limit (Zip bomb defense)
@@ -105,11 +108,12 @@ async def audit_project_zip(file:UploadFile=File(...),user=Depends(current_user)
         with zipfile.ZipFile(io.BytesIO(contents)) as z:
             candidate_infos = []
             for info in z.infolist():
-                name = info.filename
+                name = info.filename.replace('\\', '/')
                 # Path traversal defense
-                if name.startswith('/') or '..' in name or '\\..' in name:
+                if name.startswith('/') or '..' in name:
                     raise HTTPException(422, 'Insecure path traversal detected in ZIP archive.')
-                if name.endswith('.py') and not any(part.startswith(('.', '__', 'venv', 'env')) for part in name.split('/')):
+                parts = name.split('/')
+                if name.endswith('.py') and not any(part.startswith(('.', '__', 'venv', 'env', 'node_modules', 'dist', 'build')) for part in parts):
                     if info.file_size > MAX_UNCOMPRESSED_FILE:
                         raise HTTPException(413, f"File '{name}' exceeds 1 MB uncompressed file limit.")
                     running_uncompressed_bytes += info.file_size
@@ -123,48 +127,108 @@ async def audit_project_zip(file:UploadFile=File(...),user=Depends(current_user)
                 raise HTTPException(422, f'Archive exceeds {MAX_PY_FILES} Python files limit.')
             
             for info in candidate_infos:
-                raw=z.read(info.filename).decode('utf-8',errors='replace')
-                res=audit_code(raw)
-                loc=res['metrics']['loc']
-                findings=res['findings']
-                total_loc+=loc
-                all_findings_count+=len(findings)
-                file_high=sum(1 for f in findings if f.get('severity')=='HIGH')
-                high_count+=file_high
-                file_rows.append(f"| `{info.filename}` | {loc} | {res['metrics']['cyclomatic_complexity']} | {len(findings)} | {file_high} |")
-                for f in findings:
-                    findings_details.append(f"- **`{info.filename}` (Line {f.get('line','?')})** `[{f.get('severity','MED')}]` {f.get('rule_id')}: {f.get('message')}")
+                normalized_path = info.filename.replace('\\', '/')
+                raw = z.read(info.filename).decode('utf-8', errors='replace')
+                res = audit_code(raw)
+                loc = res['metrics']['loc']
+                cplx = res['metrics']['cyclomatic_complexity']
+                findings = res['findings']
+                
+                file_high = sum(1 for f in findings if f.get('severity') == 'HIGH')
+                file_med = sum(1 for f in findings if f.get('severity') == 'MEDIUM')
+                file_low = sum(1 for f in findings if f.get('severity') == 'LOW')
+                
+                total_loc += loc
+                total_complexity += cplx
+                all_findings_count += len(findings)
+                high_count += file_high
+                med_count += file_med
+                low_count += file_low
+                
+                modules.append({
+                    'path': normalized_path,
+                    'loc': loc,
+                    'complexity': cplx,
+                    'findings_count': len(findings),
+                    'high_count': file_high,
+                    'findings': findings
+                })
     except zipfile.BadZipFile:
         raise HTTPException(422,'Corrupted or invalid ZIP archive.')
 
-    elapsed=max(1, round((time.perf_counter()-started)*1000))
+    # Sort modules: Highest risk first
+    modules.sort(key=lambda m: (m['high_count'], m['findings_count'], m['complexity']), reverse=True)
 
-    md=[
+    file_rows = []
+    for m in modules:
+        file_rows.append(f"| `{m['path']}` | {m['loc']} | {m['complexity']} | {m['findings_count']} | {m['high_count']} |")
+        for f in m['findings']:
+            findings_details.append(
+                f"- **`{m['path']}` (Line {f.get('line', '?')})** `[{f.get('severity', 'MED')}]` {f.get('rule_id')}: {f.get('message')}"
+            )
+
+    avg_complexity = round(total_complexity / max(1, len(modules)), 1)
+    if high_count >= 5:
+        grade = "🔴 Grade F (Critical Security Risks)"
+        health_status = "Severe vulnerabilities present. Immediate remediation required."
+    elif high_count >= 1:
+        grade = "🟠 Grade D (Security Risks Identified)"
+        health_status = "High-severity vulnerabilities detected. Fix before deployment."
+    elif all_findings_count > 10 or avg_complexity > 8:
+        grade = "🟡 Grade C (Moderate Technical Debt)"
+        health_status = "High branch complexity or multiple code smells present."
+    elif all_findings_count > 0:
+        grade = "🟢 Grade B (Good Maintainability)"
+        health_status = "Clean security profile with minor code smells."
+    else:
+        grade = "🏆 Grade A+ (Exceptional Quality)"
+        health_status = "Zero static issues or security violations detected."
+
+    roadmap = []
+    if high_count > 0:
+        vulnerable_files = [m['path'] for m in modules if m['high_count'] > 0]
+        roadmap.append(f"1. **Critical Security Patching:** Remediate high-severity issues in `{', '.join(vulnerable_files[:3])}` using the **Verify & Auto-Repair** tool.")
+    if avg_complexity > 6:
+        complex_files = [m['path'] for m in modules if m['complexity'] > 8]
+        if complex_files:
+            roadmap.append(f"2. **Algorithmic Refactoring:** Decompose high-complexity functions in `{', '.join(complex_files[:3])}` to reduce cyclomatic depth.")
+    roadmap.append("3. **Continuous Verification:** Re-upload project ZIP after fixes to verify that the health grade advances toward Grade A+.")
+
+    elapsed = max(1, round((time.perf_counter()-started)*1000))
+
+    md = [
         "## 📦 Multi-File Project Security & Quality Audit\n",
         f"**Audited Archive:** `{file.filename}` · Scanned **{len(candidate_infos)}** Python modules\n",
         "### 📊 Project Aggregated Metrics",
-        f"- **Total Lines of Code (LOC):** `{total_loc}`",
-        f"- **Total Static Findings:** `{all_findings_count}`",
-        f"- **High-Severity Security Risks:** `{high_count}` " + ("⚠️ (Action Required)" if high_count>0 else "✅ (None)"),
-        f"- **Overall Code Health:** " + ("🟢 Clean" if all_findings_count==0 else "🟡 Needs Attention" if high_count==0 else "🔴 Critical Vulnerabilities Found"),
-        "\n### 📁 Module Breakdown\n",
+        f"- **Project Health Grade:** **{grade}**",
+        f"- **Total Lines of Code (LOC):** `{total_loc}` across `{len(modules)}` modules",
+        f"- **Average Cyclomatic Complexity:** `{avg_complexity}` per module",
+        f"- **Security Findings Breakdown:** `{high_count}` High ⚠️ · `{med_count}` Medium · `{low_count}` Low",
+        f"- **Executive Assessment:** {health_status}",
+        "\n### 📁 Module Breakdown (Sorted by Priority)\n",
         "| Module Path | LOC | Complexity | Issues | High Sev |",
         "| :--- | :---: | :---: | :---: | :---: |",
-        *file_rows
+        *file_rows,
+        "\n### 🎯 Recommended Remediation Roadmap\n",
+        *roadmap
     ]
     if findings_details:
         md.append("\n### 🔍 Detailed Project Findings\n" + '\n'.join(findings_details[:50]))
-        if len(findings_details)>50:
+        if len(findings_details) > 50:
             md.append(f"\n*...and {len(findings_details)-50} additional findings.*")
     
     md.append("\n**Engine:** Deterministic AST & Bandit Scanner (Executed in memory with safe zip decompression).")
     
+    result_text = '\n'.join(md)
+    if persist_history:
+        save_history(user['id'], 'audit-project', 'python', file.filename, '', '', result_text, 'bandit+ast')
+
     return AnalysisResponse(
         tool='audit-project',
-        result='\n'.join(md),
+        result=result_text,
         engine='bandit+ast',
         cached=False,
-        saved=False,
+        saved=persist_history,
         duration_ms=elapsed,
         disclaimer='Multi-file project static inspection completed without code execution.'
     )

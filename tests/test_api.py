@@ -230,3 +230,13 @@ def test_audit_project_zip_valid_and_security(signed_in):
     r_empty = client.post('/api/audit-project', files={'file': ('empty.zip', buf_empty.getvalue(), 'application/zip')})
     assert r_empty.status_code == 422
 
+    # 5. With save_history=True
+    r_saved = client.post(
+        '/api/audit-project',
+        data={'save_history': 'true'},
+        files={'file': ('project.zip', buf.getvalue(), 'application/zip')}
+    )
+    assert r_saved.status_code == 200
+    assert r_saved.json()['saved'] is True
+
+
