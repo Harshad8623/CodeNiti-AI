@@ -45,7 +45,8 @@ def init_db():
                 tool TEXT NOT NULL, language TEXT NOT NULL,
                 code TEXT NOT NULL DEFAULT '', code2 TEXT NOT NULL DEFAULT '',
                 prompt TEXT NOT NULL DEFAULT '', result TEXT NOT NULL,
-                engine TEXT NOT NULL, created_at TEXT NOT NULL
+                engine TEXT NOT NULL, cache_key TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_history_user ON history(user_id, id DESC);
             CREATE TABLE IF NOT EXISTS response_cache (
@@ -68,6 +69,10 @@ def init_db():
                 PRIMARY KEY (user_id, day)
             );
         ''')
+        # Migration: ensure cache_key column exists for existing databases
+        cols = [r['name'] for r in db.execute('PRAGMA table_info(history)').fetchall()]
+        if 'cache_key' not in cols:
+            db.execute("ALTER TABLE history ADD COLUMN cache_key TEXT NOT NULL DEFAULT ''")
 
 
 def fingerprint(user_id: int, payload: dict) -> str:
@@ -90,11 +95,11 @@ def cache_put(key: str, user_id: int, result: str, engine: str):
 
 
 def save_history(user_id: int, tool: str, language: str, code: str, code2: str,
-                 prompt: str, result: str, engine: str):
+                 prompt: str, result: str, engine: str, cache_key: str = ''):
     with connect() as db:
-        db.execute('''INSERT INTO history(user_id,tool,language,code,code2,prompt,result,engine,created_at)
-                   VALUES (?,?,?,?,?,?,?,?,?)''',
-                   (user_id,tool,language,code,code2,prompt,result,engine,utcnow().isoformat()))
+        db.execute('''INSERT INTO history(user_id,tool,language,code,code2,prompt,result,engine,cache_key,created_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?)''',
+                   (user_id,tool,language,code,code2,prompt,result,engine,cache_key,utcnow().isoformat()))
         db.execute('''DELETE FROM history WHERE user_id=? AND id NOT IN (
                    SELECT id FROM history WHERE user_id=? ORDER BY id DESC LIMIT 100)''',(user_id,user_id))
 
@@ -108,6 +113,12 @@ def list_history(user_id: int, limit: int = 30):
 
 def remove_history(user_id: int, item_id: int) -> bool:
     with connect() as db:
+        row = db.execute('SELECT cache_key FROM history WHERE user_id=? AND id=?', (user_id, item_id)).fetchone()
+        if row and row['cache_key']:
+            ck = row['cache_key']
+            db.execute('DELETE FROM response_cache WHERE key=? AND user_id=?', (ck, user_id))
+            from services.cache import cache
+            cache.delete(ck)
         return db.execute('DELETE FROM history WHERE user_id=? AND id=?',(user_id,item_id)).rowcount > 0
 
 

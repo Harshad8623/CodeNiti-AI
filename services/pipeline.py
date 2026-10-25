@@ -55,7 +55,7 @@ async def process(tool:str,user_id:int,payload:dict,save:bool)->AnalysisResponse
             cache.set(key,data)
             cache_put(key,user_id,result,engine)
     if save:
-        save_history(user_id,tool,language,code,code2,prompt,result,engine)
+        save_history(user_id,tool,language,code,code2,prompt,result,engine,key)
     elapsed=(time.perf_counter()-started)*1000
     record_metric(user_id,tool,engine,cached,elapsed)
     return AnalysisResponse(tool=tool,result=result,engine=engine,cached=cached,saved=save,

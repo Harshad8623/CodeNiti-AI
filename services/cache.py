@@ -29,6 +29,10 @@ class MemoryCache:
             while len(self.data) > self.max_items:
                 self.data.popitem(last=False)
 
+    def delete(self, key):
+        with self.lock:
+            self.data.pop(key, None)
+
     def clear(self):
         with self.lock:
             self.data.clear()

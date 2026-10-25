@@ -52,6 +52,11 @@ def test_saved_history_cache_and_metrics(signed_in):
     assert stats['p95_latency_ms'] is not None
     assert stats['saved_analyses']==2
     assert stats['sample_size']==3
+    # Invalidate cache when single history item is deleted
+    history_items = client.get('/api/history').json()
+    assert client.delete(f'/api/history/{history_items[0]["id"]}').status_code==200
+    three = client.post('/api/compare', json=payload).json()
+    assert not three['cached']
 
 
 def test_user_data_isolation_and_account_deletion(signed_in):
