@@ -1,5 +1,9 @@
 """Protected analysis and private history endpoints with per-user metrics."""
+import io
+import os
 import shutil
+import time
+import zipfile
 from fastapi import APIRouter,HTTPException,Request,Query,Depends,UploadFile,File,Form
 from config import settings
 from database import list_history,remove_history,clear_history,workspace_stats,save_history
@@ -76,190 +80,110 @@ async def verify_repair(req:CodeRequest,user=Depends(current_user)):
     except Exception as exc:
         raise HTTPException(502,"Automated repair verification failed. Please try again.") from exc
 
-@router.post('/audit-project',response_model=AnalysisResponse)
-async def audit_project_zip(file:UploadFile=File(...),persist_history:bool=Form(False,alias='save_history'),user=Depends(current_user)):
-    import time
-    import os
-    started=time.perf_counter()
-    if not file.filename.lower().endswith('.zip'):
-        raise HTTPException(422,'Upload a valid .zip archive containing source code files.')
-    contents=await file.read()
-    if len(contents)>5*1024*1024:
-        raise HTTPException(413,'ZIP archive exceeds 5 MB compressed upload limit.')
-    
-    import zipfile
-    import io
-    from services.audit_engine import audit_code
-    
-    CODE_EXTENSIONS = {
-        '.py': 'Python',
-        '.js': 'JavaScript',
-        '.jsx': 'JavaScript',
-        '.mjs': 'JavaScript',
-        '.cjs': 'JavaScript',
-        '.ts': 'TypeScript',
-        '.tsx': 'TypeScript',
-        '.java': 'Java',
-        '.cpp': 'C++',
-        '.cc': 'C++',
-        '.cxx': 'C++',
-        '.c': 'C',
-        '.h': 'C/C++ Header',
-        '.hpp': 'C++ Header',
-        '.cs': 'C#',
-        '.go': 'Go',
-        '.rs': 'Rust',
-        '.sql': 'SQL',
-        '.kt': 'Kotlin',
-        '.swift': 'Swift',
-        '.php': 'PHP',
-        '.rb': 'Ruby',
-        '.sh': 'Shell',
-    }
+CODE_EXTENSIONS = {
+    '.py': 'Python', '.js': 'JavaScript', '.jsx': 'JavaScript', '.mjs': 'JavaScript', '.cjs': 'JavaScript',
+    '.ts': 'TypeScript', '.tsx': 'TypeScript', '.java': 'Java', '.cpp': 'C++', '.cc': 'C++', '.cxx': 'C++',
+    '.c': 'C', '.h': 'C/C++ Header', '.hpp': 'C++ Header', '.cs': 'C#', '.go': 'Go', '.rs': 'Rust',
+    '.sql': 'SQL', '.kt': 'Kotlin', '.swift': 'Swift', '.php': 'PHP', '.rb': 'Ruby', '.sh': 'Shell',
+}
+MEDIA_EXTS = {'.png', '.jpg', '.jpeg', '.gif', '.svg', '.ico', '.webp', '.bmp', '.mp3', '.mp4'}
+DOCS_EXTS = {'.md', '.txt', '.doc', '.docx', '.pdf', '.rst', '.rtf'}
+CONFIG_EXTS = {'.json', '.yaml', '.yml', '.xml', '.toml', '.ini', '.env', '.lock'}
 
-    MEDIA_EXTS = {'.png', '.jpg', '.jpeg', '.gif', '.svg', '.ico', '.webp', '.bmp', '.mp3', '.mp4'}
-    DOCS_EXTS = {'.md', '.txt', '.doc', '.docx', '.pdf', '.rst', '.rtf'}
-    CONFIG_EXTS = {'.json', '.yaml', '.yml', '.xml', '.toml', '.ini', '.env', '.lock'}
+MAX_UNCOMPRESSED_TOTAL = 15 * 1024 * 1024
+MAX_UNCOMPRESSED_FILE = 1 * 1024 * 1024
+MAX_CODE_FILES = 30
 
-    total_loc=0
-    all_findings_count=0
-    high_count=0
-    med_count=0
-    low_count=0
-    total_complexity=0
-    modules=[]
-    findings_details=[]
-    detected_languages=set()
-    neglected_count=0
-    neglected_categories={'images':0, 'docs':0, 'configs':0, 'other':0}
-    
-    MAX_UNCOMPRESSED_TOTAL = 15 * 1024 * 1024  # 15 MB total expanded limit (Zip bomb defense)
-    MAX_UNCOMPRESSED_FILE = 1 * 1024 * 1024    # 1 MB per file limit
-    MAX_CODE_FILES = 30
+
+def _tally_neglected_extension(ext: str, neglected_categories: dict[str, int]) -> None:
+    """Tally ignored non-code file types for audit reporting."""
+    if ext in MEDIA_EXTS:
+        neglected_categories['images'] += 1
+    elif ext in DOCS_EXTS:
+        neglected_categories['docs'] += 1
+    elif ext in CONFIG_EXTS:
+        neglected_categories['configs'] += 1
+    else:
+        neglected_categories['other'] += 1
+
+
+def _filter_archive_entries(z: zipfile.ZipFile) -> tuple[list[tuple[zipfile.ZipInfo, str]], int, dict[str, int]]:
+    """Scan and validate ZIP entries against zip bombs, path traversal, and categorize ignored files."""
+    candidate_infos: list[tuple[zipfile.ZipInfo, str]] = []
+    neglected_count = 0
+    neglected_categories = {'images': 0, 'docs': 0, 'configs': 0, 'other': 0}
     running_uncompressed_bytes = 0
 
-    try:
-        with zipfile.ZipFile(io.BytesIO(contents)) as z:
-            candidate_infos = []
-            for info in z.infolist():
-                if info.is_dir():
-                    continue
-                name = info.filename.replace('\\', '/')
-                # Path traversal defense
-                if name.startswith('/') or '..' in name:
-                    raise HTTPException(422, 'Insecure path traversal detected in ZIP archive.')
-                
-                parts = name.split('/')
-                # Filter out hidden or build directories
-                if any(part.startswith(('.', '__', 'venv', 'env', 'node_modules', 'dist', 'build')) for part in parts):
-                    neglected_count += 1
-                    continue
+    for info in z.infolist():
+        if info.is_dir():
+            continue
+        name = info.filename.replace('\\', '/')
+        if name.startswith('/') or '..' in name:
+            raise HTTPException(422, 'Insecure path traversal detected in ZIP archive.')
 
-                _, ext = os.path.splitext(name.lower())
-                if ext in CODE_EXTENSIONS:
-                    if info.file_size > MAX_UNCOMPRESSED_FILE:
-                        raise HTTPException(413, f"File '{name}' exceeds 1 MB uncompressed file limit.")
-                    running_uncompressed_bytes += info.file_size
-                    if running_uncompressed_bytes > MAX_UNCOMPRESSED_TOTAL:
-                        raise HTTPException(413, 'ZIP archive exceeds 15 MB uncompressed size limit (Zip Bomb protection).')
-                    candidate_infos.append((info, CODE_EXTENSIONS[ext]))
-                else:
-                    neglected_count += 1
-                    if ext in MEDIA_EXTS:
-                        neglected_categories['images'] += 1
-                    elif ext in DOCS_EXTS:
-                        neglected_categories['docs'] += 1
-                    elif ext in CONFIG_EXTS:
-                        neglected_categories['configs'] += 1
-                    else:
-                        neglected_categories['other'] += 1
+        parts = name.split('/')
+        if any(part.startswith(('.', '__', 'venv', 'env', 'node_modules', 'dist', 'build')) for part in parts):
+            neglected_count += 1
+            continue
 
-            if not candidate_infos:
-                raise HTTPException(422,'No supported source code files found in archive. Non-code files (images, documents, markdown, configs) were safely ignored.')
-            if len(candidate_infos) > MAX_CODE_FILES:
-                raise HTTPException(422, f'Archive exceeds {MAX_CODE_FILES} source code files limit.')
-            
-            for info, lang_name in candidate_infos:
-                normalized_path = info.filename.replace('\\', '/')
-                raw = z.read(info.filename).decode('utf-8', errors='replace')
-                res = audit_code(raw, language=lang_name.lower())
-                loc = res['metrics']['loc']
-                cplx = res['metrics']['cyclomatic_complexity']
-                findings = res['findings']
-                detected_languages.add(lang_name)
-                
-                file_high = sum(1 for f in findings if f.get('severity') == 'HIGH')
-                file_med = sum(1 for f in findings if f.get('severity') == 'MEDIUM')
-                file_low = sum(1 for f in findings if f.get('severity') == 'LOW')
-                
-                total_loc += loc
-                total_complexity += cplx
-                all_findings_count += len(findings)
-                high_count += file_high
-                med_count += file_med
-                low_count += file_low
-                
-                modules.append({
-                    'path': normalized_path,
-                    'language': lang_name,
-                    'loc': loc,
-                    'complexity': cplx,
-                    'findings_count': len(findings),
-                    'high_count': file_high,
-                    'findings': findings
-                })
-    except zipfile.BadZipFile:
-        raise HTTPException(422,'Corrupted or invalid ZIP archive.')
+        _, ext = os.path.splitext(name.lower())
+        if ext in CODE_EXTENSIONS:
+            if info.file_size > MAX_UNCOMPRESSED_FILE:
+                raise HTTPException(413, f"File '{name}' exceeds 1 MB uncompressed file limit.")
+            running_uncompressed_bytes += info.file_size
+            if running_uncompressed_bytes > MAX_UNCOMPRESSED_TOTAL:
+                raise HTTPException(413, 'ZIP archive exceeds 15 MB uncompressed size limit (Zip Bomb protection).')
+            candidate_infos.append((info, CODE_EXTENSIONS[ext]))
+        else:
+            neglected_count += 1
+            _tally_neglected_extension(ext, neglected_categories)
 
-    # Sort modules: Highest risk first
-    modules.sort(key=lambda m: (m['high_count'], m['findings_count'], m['complexity']), reverse=True)
+    return candidate_infos, neglected_count, neglected_categories
 
-    file_rows = []
-    for m in modules:
-        file_rows.append(f"| `{m['path']}` | {m['language']} | {m['loc']} | {m['complexity']} | {m['findings_count']} | {m['high_count']} |")
-        for f in m['findings']:
-            findings_details.append(
-                f"- **`{m['path']}` (Line {f.get('line', '?')})** `[{f.get('severity', 'MED')}]` {f.get('rule_id')}: {f.get('message')}"
-            )
 
-    avg_complexity = round(total_complexity / max(1, len(modules)), 1)
+def _determine_project_health(high_count: int, all_findings_count: int, avg_func_complexity: float) -> tuple[str, str]:
+    """Calculate letter grade and health status from aggregated metrics."""
     if high_count >= 5:
-        grade = "🔴 Grade F (Critical Security Risks)"
-        health_status = "Severe vulnerabilities present. Immediate remediation required."
-    elif high_count >= 1:
-        grade = "🟠 Grade D (Security Risks Identified)"
-        health_status = "High-severity vulnerabilities detected. Fix before deployment."
-    elif all_findings_count > 10 or avg_complexity > 8:
-        grade = "🟡 Grade C (Moderate Technical Debt)"
-        health_status = "High branch complexity or multiple code smells present."
-    elif all_findings_count > 0:
-        grade = "🟢 Grade B (Good Maintainability)"
-        health_status = "Clean security profile with minor code smells."
-    else:
-        grade = "🏆 Grade A+ (Exceptional Quality)"
-        health_status = "Zero static issues or security violations detected."
+        return "🔴 Grade F (Critical Security Risks)", "Severe vulnerabilities present. Immediate remediation required."
+    if high_count >= 1:
+        return "🟠 Grade D (Security Risks Identified)", "High-severity vulnerabilities detected. Fix before deployment."
+    if all_findings_count > 10 or avg_func_complexity > 10.0:
+        return "🟡 Grade C (Moderate Technical Debt)", "High branch complexity or multiple code smells present."
+    if all_findings_count > 0:
+        return "🟢 Grade B (Good Maintainability)", "Clean security profile with minor code smells."
+    return "🏆 Grade A+ (Exceptional Quality)", "Zero static issues or security violations detected."
 
+
+def _build_roadmap_recommendations(high_count: int, avg_func_complexity: float, modules: list[dict]) -> list[str]:
+    """Generate prioritized actionable remediation steps."""
     roadmap = []
     if high_count > 0:
         vulnerable_files = [m['path'] for m in modules if m['high_count'] > 0]
         roadmap.append(f"1. **Critical Security Patching:** Remediate high-severity issues in `{', '.join(vulnerable_files[:3])}` using the **Verify & Auto-Repair** tool.")
-    if avg_complexity > 6:
-        complex_files = [m['path'] for m in modules if m['complexity'] > 8]
+    if avg_func_complexity > 6:
+        complex_files = [m['path'] for m in modules if m['complexity'] > 20]
         if complex_files:
             roadmap.append(f"2. **Algorithmic Refactoring:** Decompose high-complexity functions in `{', '.join(complex_files[:3])}` to reduce cyclomatic depth.")
     roadmap.append("3. **Continuous Verification:** Re-upload project ZIP after fixes to verify that the health grade advances toward Grade A+.")
+    return roadmap
 
-    elapsed = max(1, round((time.perf_counter()-started)*1000))
 
+def _generate_zip_audit_report(
+    filename: str, candidate_count: int, grade: str, health_status: str,
+    detected_languages: set, total_loc: int, modules: list, neglected_count: int,
+    neglected_categories: dict, avg_func_complexity: float, avg_module_complexity: float,
+    high_count: int, med_count: int, low_count: int, file_rows: list, roadmap: list, findings_details: list
+) -> str:
+    """Format full multi-file audit markdown report."""
     md = [
         "## 📦 Multi-File Project Security & Quality Audit\n",
-        f"**Audited Archive:** `{file.filename}` · Scanned **{len(candidate_infos)}** source modules\n",
+        f"**Audited Archive:** `{filename}` · Scanned **{candidate_count}** source modules\n",
         "### 📊 Project Aggregated Metrics",
         f"- **Project Health Grade:** **{grade}**",
         f"- **Detected Code Languages:** {', '.join(sorted(detected_languages)) or 'None'}",
         f"- **Total Lines of Code (LOC):** `{total_loc}` across `{len(modules)}` source files",
         f"- **Neglected Non-Code Files:** `{neglected_count}` safely ignored ({neglected_categories['images']} images/media, {neglected_categories['docs']} docs/markdown, {neglected_categories['configs']} data/config)",
-        f"- **Average Cyclomatic Complexity:** `{avg_complexity}` per module",
+        f"- **Average Cyclomatic Complexity:** `{avg_func_complexity}` per function (`{avg_module_complexity}` per module)",
         f"- **Security Findings Breakdown:** `{high_count}` High ⚠️ · `{med_count}` Medium · `{low_count}` Low",
         f"- **Executive Assessment:** {health_status}",
         "\n### 📁 Module Breakdown (Sorted by Priority)\n",
@@ -273,10 +197,96 @@ async def audit_project_zip(file:UploadFile=File(...),persist_history:bool=Form(
         md.append("\n### 🔍 Detailed Project Findings\n" + '\n'.join(findings_details[:50]))
         if len(findings_details) > 50:
             md.append(f"\n*...and {len(findings_details)-50} additional findings.*")
-    
     md.append("\n**Engine:** Deterministic AST & Multi-Language Static Scanner (Executed in memory with safe zip decompression).")
-    
-    result_text = '\n'.join(md)
+    return '\n'.join(md)
+
+
+@router.post('/audit-project', response_model=AnalysisResponse)
+async def audit_project_zip(file: UploadFile = File(...), persist_history: bool = Form(False, alias='save_history'), user=Depends(current_user)):
+    started = time.perf_counter()
+    if not file.filename.lower().endswith('.zip'):
+        raise HTTPException(422, 'Upload a valid .zip archive containing source code files.')
+    contents = await file.read()
+    if len(contents) > 5 * 1024 * 1024:
+        raise HTTPException(413, 'ZIP archive exceeds 5 MB compressed upload limit.')
+
+    from services.audit_engine import audit_code
+
+    try:
+        with zipfile.ZipFile(io.BytesIO(contents)) as z:
+            candidate_infos, neglected_count, neglected_categories = _filter_archive_entries(z)
+            if not candidate_infos:
+                raise HTTPException(422, 'No supported source code files found in archive. Non-code files (images, documents, markdown, configs) were safely ignored.')
+            if len(candidate_infos) > MAX_CODE_FILES:
+                raise HTTPException(422, f'Archive exceeds {MAX_CODE_FILES} source code files limit.')
+
+            total_loc = 0
+            total_complexity = 0
+            total_functions = 0
+            all_findings_count = 0
+            high_count = 0
+            med_count = 0
+            low_count = 0
+            modules = []
+            findings_details = []
+            detected_languages = set()
+
+            for info, lang_name in candidate_infos:
+                normalized_path = info.filename.replace('\\', '/')
+                raw = z.read(info.filename).decode('utf-8', errors='replace')
+                res = audit_code(raw, language=lang_name.lower(), file_path=normalized_path)
+                loc = res['metrics']['loc']
+                cplx = res['metrics']['cyclomatic_complexity']
+                findings = res['findings']
+                detected_languages.add(lang_name)
+
+                file_high = sum(1 for f in findings if f.get('severity') == 'HIGH')
+                file_med = sum(1 for f in findings if f.get('severity') == 'MEDIUM')
+                file_low = sum(1 for f in findings if f.get('severity') == 'LOW')
+
+                total_loc += loc
+                total_complexity += cplx
+                total_functions += res['metrics']['function_count']
+                all_findings_count += len(findings)
+                high_count += file_high
+                med_count += file_med
+                low_count += file_low
+
+                modules.append({
+                    'path': normalized_path,
+                    'language': lang_name,
+                    'loc': loc,
+                    'complexity': cplx,
+                    'findings_count': len(findings),
+                    'high_count': file_high,
+                    'findings': findings
+                })
+    except zipfile.BadZipFile:
+        raise HTTPException(422, 'Corrupted or invalid ZIP archive.')
+
+    modules.sort(key=lambda m: (m['high_count'], m['findings_count'], m['complexity']), reverse=True)
+
+    file_rows = [
+        f"| `{m['path']}` | {m['language']} | {m['loc']} | {m['complexity']} | {m['findings_count']} | {m['high_count']} |"
+        for m in modules
+    ]
+    for m in modules:
+        for f in m['findings']:
+            findings_details.append(
+                f"- **`{m['path']}` (Line {f.get('line', '?')})** `[{f.get('severity', 'MED')}]` {f.get('rule_id')}: {f.get('message')}"
+            )
+
+    avg_func_complexity = round(total_complexity / max(1, total_functions), 1)
+    avg_module_complexity = round(total_complexity / max(1, len(modules)), 1)
+    grade, health_status = _determine_project_health(high_count, all_findings_count, avg_func_complexity)
+    roadmap = _build_roadmap_recommendations(high_count, avg_func_complexity, modules)
+    result_text = _generate_zip_audit_report(
+        file.filename, len(candidate_infos), grade, health_status, detected_languages,
+        total_loc, modules, neglected_count, neglected_categories, avg_func_complexity,
+        avg_module_complexity, high_count, med_count, low_count, file_rows, roadmap, findings_details
+    )
+
+    elapsed = max(1, round((time.perf_counter() - started) * 1000))
     if persist_history:
         save_history(user['id'], 'audit-project', 'multi', file.filename, '', '', result_text, 'ast+universal')
 

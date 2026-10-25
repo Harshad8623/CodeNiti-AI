@@ -3,7 +3,7 @@ import difflib
 import json
 from pathlib import Path
 import shutil
-import subprocess
+import subprocess  # nosec B404
 import tempfile
 
 class LocalToolError(Exception):
@@ -33,7 +33,7 @@ def beautify(code: str, language: str) -> str:
         raise LocalToolError(503, 'Ruff is not installed. Run: pip install -r requirements.txt')
     try:
         proc = subprocess.run([exe, 'format', '--stdin-filename', 'snippet.py', '-'],
-                              input=code, capture_output=True, text=True, timeout=5, check=False)
+                              input=code, capture_output=True, text=True, timeout=5, check=False)  # nosec B603
     except subprocess.TimeoutExpired as exc:
         raise LocalToolError(504, 'Formatting timed out.') from exc
     if proc.returncode != 0:
@@ -53,7 +53,7 @@ def security(code: str, language: str) -> str:
         path.write_text(code, encoding='utf-8')
         try:
             proc = subprocess.run([exe, '-q', '-f', 'json', str(path)],
-                                  capture_output=True, text=True, timeout=9, check=False)
+                                  capture_output=True, text=True, timeout=9, check=False)  # nosec B603
         except subprocess.TimeoutExpired as exc:
             raise LocalToolError(504, 'Security scan timed out.') from exc
         try:

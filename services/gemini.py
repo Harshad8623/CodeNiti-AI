@@ -9,6 +9,19 @@ class AIServiceError(Exception):
         super().__init__(message)
 
 
+def _map_gemini_error(exc: Exception) -> AIServiceError:
+    """Map raw SDK exception to sanitized client-safe AIServiceError without leaking credentials."""
+    name = type(exc).__name__.lower()
+    msg = str(exc).lower()
+    if '429' in msg or 'resourceexhausted' in name:
+        return AIServiceError(429, 'AI quota reached. Please try again later.')
+    if '401' in msg or '403' in msg:
+        return AIServiceError(502, 'AI authorization failed. Check server API-key configuration.')
+    if 'high demand' in msg or 'unavailable' in msg:
+        return AIServiceError(503, f'Model {settings.gemini_model} is temporarily experiencing high demand. Try switching GEMINI_MODEL in .env or retry shortly.')
+    return AIServiceError(502, 'The AI provider is temporarily unavailable. Please try again.')
+
+
 async def call_gemini(tool: str, payload: dict) -> str:
     if not settings.gemini_api_key:
         raise AIServiceError(503, 'Gemini is not configured. Add GEMINI_API_KEY to your .env to use AI-powered tools.')
@@ -38,16 +51,7 @@ async def call_gemini(tool: str, payload: dict) -> str:
     except AIServiceError:
         raise
     except Exception as exc:
-        # Do not leak request URLs, environment values, provider responses, or credentials.
-        name = type(exc).__name__.lower()
-        msg = str(exc).lower()
-        if '429' in msg or 'resourceexhausted' in name:
-            raise AIServiceError(429, 'AI quota reached. Please try again later.') from exc
-        if '401' in msg or '403' in msg:
-            raise AIServiceError(502, 'AI authorization failed. Check server API-key configuration.') from exc
-        if 'high demand' in msg or 'unavailable' in msg:
-            raise AIServiceError(503, f'Model {settings.gemini_model} is temporarily experiencing high demand. Try switching GEMINI_MODEL in .env or retry shortly.') from exc
-        raise AIServiceError(502, 'The AI provider is temporarily unavailable. Please try again.') from exc
+        raise _map_gemini_error(exc) from exc
     finally:
         await client.aio.aclose()
         client.close()
