@@ -5,11 +5,11 @@
 Final Year Major Project (2026–27) · Department of **Electronics & Computer Engineering**  
 **CSMSS Chh. Shahu College of Engineering, Chhatrapati Sambhajinagar, Maharashtra**
 
-| Project team | Roll Number | PRN number |
-|---|---|---|
-| DHUPPE HARSHAD MADHAV | EC4145 | 23025331844046 |
-| SHINDE SAURABH BHAGAJI | EC4121 | 23025331844021 |
-| KALE PRADEEP DYANESHWAR | EC4168 | 24025331844502 |
+| Project team |
+|---|
+| DHUPPE HARSHAD MADHAV |
+| SHINDE SAURABH BHAGAJI |
+| KALE PRADEEP DYANESHWAR |
 
 **Project guide:** Prof. J. N. Mohite
 
